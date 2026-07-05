@@ -39,3 +39,7 @@ npm start
 ```
 
 `npm run dist` produces an unsigned arm64 DMG under `release/`.
+
+Note: VS Code integrated terminals export `ELECTRON_RUN_AS_NODE=1`, which makes
+`npm start` run Electron as plain Node (no window). Run
+`env -u ELECTRON_RUN_AS_NODE npm start` there, or use a regular terminal.
