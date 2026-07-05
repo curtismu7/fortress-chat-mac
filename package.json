@@ -1,0 +1,24 @@
+{
+  "name": "fortress-code-mac",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fortress Code for Mac — local-first AI chat with US-only model governance",
+  "main": "dist/main.js",
+  "scripts": {
+    "sync": "node scripts/sync-renderer.mjs",
+    "build": "npm run sync && node esbuild.mjs && tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "npm run build && electron .",
+    "smoke": "npm run build && electron . --smoke",
+    "dist": "npm run build && electron-builder --mac --arm64"
+  },
+  "dependencies": { "zod": "^3.23.0" },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  }
+}
