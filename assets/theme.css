@@ -1,0 +1,66 @@
+/*
+ * Theme shim for the reused VS Code webview (chat.css/chat.js).
+ * Defines every --vscode-* custom property chat.css references, since
+ * Electron has no VS Code theme host to supply them.
+ *
+ * Enumerated via:
+ *   grep -o 'var(--vscode-[a-zA-Z-]*' \
+ *     vendor/fortress-code/packages/extension/media/chat.css | sort -u
+ * (21 variables; --vscode-editor-background is added here too, for the
+ * body background rule below, even though chat.css itself doesn't use it.)
+ */
+
+:root {
+  --vscode-badge-background: #4d4d4d;
+  --vscode-badge-foreground: #ffffff;
+  --vscode-button-background: #0e639c;
+  --vscode-button-foreground: #ffffff;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-dropdown-background: #3c3c3c;
+  --vscode-dropdown-border: #3c3c3c;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-editor-font-family: Consolas, 'Courier New', monospace;
+  --vscode-editorWidget-background: #252526;
+  --vscode-focusBorder: #007fd4;
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --vscode-foreground: #cccccc;
+  --vscode-input-background: #3c3c3c;
+  --vscode-input-border: #3c3c3c;
+  --vscode-inputValidation-errorBackground: #5a1d1d;
+  --vscode-inputValidation-errorBorder: #be1100;
+  --vscode-panel-border: #333333;
+  --vscode-progressBar-background: #0e70c0;
+  --vscode-textCodeBlock-background: #0a0a0a;
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-widget-border: #454545;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --vscode-badge-background: #c4c4c4;
+    --vscode-badge-foreground: #333333;
+    --vscode-button-background: #007acc;
+    --vscode-button-foreground: #ffffff;
+    --vscode-descriptionForeground: #717171;
+    --vscode-dropdown-background: #ffffff;
+    --vscode-dropdown-border: #cecece;
+    --vscode-editor-background: #ffffff;
+    --vscode-editorWidget-background: #f3f3f3;
+    --vscode-focusBorder: #0090f1;
+    --vscode-foreground: #3b3b3b;
+    --vscode-input-background: #ffffff;
+    --vscode-input-border: #cecece;
+    --vscode-inputValidation-errorBackground: #f2dede;
+    --vscode-inputValidation-errorBorder: #be1100;
+    --vscode-panel-border: #d4d4d4;
+    --vscode-progressBar-background: #0e70c0;
+    --vscode-textCodeBlock-background: #dcdcdc;
+    --vscode-textLink-foreground: #006ab1;
+    --vscode-widget-border: #d4d4d4;
+  }
+}
+
+/* v1: no editor, no agent mode */
+label:has(#agent-toggle) { display: none; }
+button[data-act="insert"], button[data-act="apply"] { display: none; }
+body { background: var(--vscode-editor-background); color: var(--vscode-foreground); }
