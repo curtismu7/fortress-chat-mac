@@ -1,7 +1,7 @@
 import { readFileSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadPolicy, localEntries, explainBlock, type PolicyEntry, type StatusResponse } from '@fortress-chat/shared';
+import { loadPolicy, visibleLocalEntries, hiddenLocalEntries, explainBlock, formatPolicyFatal, type PolicyEntry, type StatusResponse } from '@fortress-chat/shared';
 import { DaemonClient } from '../../vendor/fortress-chat/packages/extension/src/daemon';
 import { RagService } from '../../vendor/fortress-chat/packages/extension/src/rag/service';
 import { Debouncer } from '../../vendor/fortress-chat/packages/extension/src/rag/watcher';
@@ -30,10 +30,10 @@ import { FileMemento } from './fileMemento';
 import { SecretStore, OPENROUTER_KEY_ID, FIREWORKS_KEY_ID } from './secrets';
 import { executeMacTool, resolveInWorkspace } from './macTools';
 
-const SYSTEM_PROMPT = 'You are FortressChat, a helpful local coding assistant.';
-const DEV_MODE_KEY = 'fortressChat.devMode';
-const MCP_KEY = 'fortressChat.mcpServers';
-const SKILL_DIRS_KEY = 'fortressChat.skillDirectories';
+const SYSTEM_PROMPT = 'You are Fortress Code, a helpful local coding assistant.';
+const DEV_MODE_KEY = 'fortressCode.devMode';
+const MCP_KEY = 'fortressCode.mcpServers';
+const SKILL_DIRS_KEY = 'fortressCode.skillDirectories';
 
 const MODE_PROMPTS: Record<string, string> = {
   plan: 'You are in plan mode. Outline a clear step-by-step plan before editing files. Discuss tradeoffs and wait for confirmation before applying changes unless the user asked you to implement immediately.',
@@ -58,6 +58,7 @@ export interface ControllerDeps {
   openChatPanel?: () => void;
   openSettingsFile: () => Promise<void>;
   showInfo: (message: string) => void;
+  policyFatal: (message: string) => void;
 }
 
 export class ChatController {
@@ -86,17 +87,19 @@ export class ChatController {
   private ragIndexing = false;
   private lastCheckpoint: AgentCheckpoint | null = null;
   private skills: Skill[] = [];
+  private policyStopped = false;
 
   constructor(private deps: ControllerDeps) {
     this.store = SessionStore.load(new FileMemento(join(deps.userDataDir, 'sessions.json')));
     this.prefs = new Prefs(new FileMemento(join(deps.userDataDir, 'prefs.json')));
-    this.devMode = !!deps.settings.get(DEV_MODE_KEY);
+    this.devMode = false;
+    deps.settings.update(DEV_MODE_KEY, false);
   }
 
   get folder(): string | null { return this.root; }
 
   private post(msg: unknown): void { this.deps.post(msg); }
-  private banner(message: string): void { this.post({ type: 'error', message: (message && message.trim()) ? message : 'FortressChat error (no details)' }); }
+  private banner(message: string): void { this.post({ type: 'error', message: (message && message.trim()) ? message : 'Fortress Code error (no details)' }); }
 
   private async ensureClient(): Promise<DaemonClient> {
     if (!this.client) this.client = await this.deps.connect();
@@ -163,13 +166,6 @@ export class ChatController {
     this.post({ type: 'chatMode', mode: this.chatMode, agentOn: this.agentMode, compareId: this.compareModelId, agentCapable });
   }
 
-  /** Restore agent toggle from the active chat's persisted meta (init + switch). */
-  private restoreAgentModeFromActiveChat(): void {
-    const meta = this.store.metas().find((c) => c.id === this.store.activeId);
-    this.agentMode = !!meta?.agentMode;
-    this.chatMode = this.agentMode ? 'agent' : 'ask';
-  }
-
   private postAgentUndo(): void {
     this.post({ type: 'agentUndo', available: !!(this.lastCheckpoint && this.lastCheckpoint.hasChanges()) });
   }
@@ -210,7 +206,7 @@ export class ChatController {
   }
 
   private async pushFullState(): Promise<void> {
-    this.post({ type: 'policy', local: localEntries(), openrouter: loadPolicy().filter((e) => e.provider === 'openrouter') });
+    this.post({ type: 'policy', local: visibleLocalEntries(), hidden: hiddenLocalEntries(), openrouter: [] });
     this.post({ type: 'prefs', prompts: this.prefs.prompts(), params: this.prefs.params() });
     this.post({ type: 'personas', personas: this.prefs.personas() });
     this.post({ type: 'skills', skills: this.skills });
@@ -225,13 +221,13 @@ export class ChatController {
     this.postChats();
     await this.pushStatus();
     this.postAgentUndo();
-    this.restoreAgentModeFromActiveChat();
     this.postChatMode();
     this.post({ type: 'context', chips: [] });
   }
 
   async init(): Promise<void> {
     try {
+      this.sanitizeLocalUsOnly();
       this.client = await this.deps.connect();
       this.poller = setInterval(() => void this.pushStatus(), 2000);
       this.refreshSkills();
@@ -239,7 +235,7 @@ export class ChatController {
       await this.initMcp();
       await this.pushFullState();
     } catch (e) {
-      this.banner(`Could not start the FortressChat daemon: ${e}`);
+      this.banner(`Could not start the Fortress Code daemon: ${e}`);
     }
   }
 
@@ -258,11 +254,34 @@ export class ChatController {
   }
 
   setDevMode(on: boolean): void {
-    this.devMode = on;
-    if (!on) this.devModel = null;
-    this.deps.settings.update(DEV_MODE_KEY, on);
+    if (on) {
+      this.stopForPolicyViolation('Developer mode and cloud models are not allowed.');
+      return;
+    }
+    this.devMode = false;
+    this.devModel = null;
+    this.deps.settings.update(DEV_MODE_KEY, false);
     void this.postDev();
     this.postChatMode();
+  }
+
+  /** Stop the app after a local-US-only policy violation. */
+  private stopForPolicyViolation(reason: string, slug?: string): void {
+    if (this.policyStopped) return;
+    this.policyStopped = true;
+    const message = formatPolicyFatal(reason, slug);
+    this.post({ type: 'policyFatal', message });
+    this.deps.policyFatal(message);
+  }
+
+  /** Clear cloud/dev routing left over from before local-US-only enforcement. */
+  private sanitizeLocalUsOnly(): void {
+    if (this.devMode || this.devModel) {
+      this.devMode = false;
+      this.devModel = null;
+      this.deps.settings.update(DEV_MODE_KEY, false);
+    }
+    if (this.selected?.provider !== 'local') this.selected = null;
   }
 
   private async postDev(): Promise<void> {
@@ -306,43 +325,18 @@ export class ChatController {
     }
     let codebase: ChatContext['codebase'] = null;
     const rag = this.ragService();
-    let embedSwap = false;
     if (rag && parseMentions(userText).includes('codebase') && this.client) {
-      try { codebase = await rag.retrieveHits(this.client, userText); embedSwap = true; }
+      try { codebase = await rag.retrieveHits(this.client, userText); }
       catch (e) { this.banner(`@codebase retrieval failed: ${e instanceof Error ? e.message : e}`); }
     }
     let docs: ChatContext['docs'] = null;
     if (parseMentions(userText).includes('docs') && this.client) {
-      try { docs = await this.docsService().retrieveHits(this.client, userText); embedSwap = true; }
+      try { docs = await this.docsService().retrieveHits(this.client, userText); }
       catch (e) { this.banner(`@docs retrieval failed: ${e instanceof Error ? e.message : e}`); }
     }
-    if (embedSwap) await this.restartLocalIfSelected();
     const images = this.pendingImages.length ? [...this.pendingImages] : undefined;
     this.pendingImages = [];
     return { file: null, selection: null, mentions, codebase, docs, images };
-  }
-
-  /** Unload the local chat llama-server when switching to cloud or dev routing. */
-  private async unloadLocalModel(): Promise<void> {
-    if (!this.client) return;
-    try {
-      const status = await this.client.status();
-      if (status.state === 'ready' || status.state === 'loading-model' || status.state === 'starting') {
-        await this.client.stop();
-      }
-    } catch { /* daemon gone */ }
-  }
-
-  /** Reload the selected local chat model after a temporary embed swap. */
-  private async restartLocalIfSelected(): Promise<void> {
-    if (this.selected?.provider !== 'local' || !this.client) return;
-    try {
-      const r = await this.client.start(this.selected.local!.catalogId);
-      if (!r.ok) this.post({ type: 'startRejected', rejection: r.rejection, modelId: this.selected.id });
-    } catch (e) {
-      this.banner(String(e));
-    }
-    await this.pushStatus();
   }
 
   private async pushStatus(): Promise<void> {
@@ -369,10 +363,7 @@ export class ChatController {
         await rag.index(this.client, (p) => this.post({ type: 'ragProgress', progress: p }));
         this.post({ type: 'ragStatus', stats: rag.stats(), indexing: false });
       } catch { /* retry on next save */ }
-      finally {
-        this.ragIndexing = false;
-        await this.restartLocalIfSelected();
-      }
+      finally { this.ragIndexing = false; }
     });
     try {
       this.ragWatcher = watch(this.root, { recursive: true }, (_e, filename) => { if (filename) debouncer.add(filename); });
@@ -390,6 +381,7 @@ export class ChatController {
   }
 
   async onMessage(m: any): Promise<void> {
+    if (this.policyStopped) return;
     try {
       switch (m.type) {
         case 'openChatInEditor':
@@ -410,9 +402,25 @@ export class ChatController {
         case 'switchChat': {
           this.generating?.abort();
           this.store.switchTo(String(m.id));
-          this.restoreAgentModeFromActiveChat();
+          // Restore per-chat agent mode so the sidebar badge and composer reflect the chat's saved state.
+          const meta = this.store.metas().find((c) => c.id === this.store.activeId);
+          this.agentMode = !!meta?.agentMode; this.chatMode = this.agentMode ? 'agent' : 'ask';
           this.post({ type: 'history', messages: this.store.active().messages });
           this.postChatMode(); this.postChats();
+          return;
+        }
+        case 'deleteChat': {
+          this.generating?.abort();
+          this.store.deleteChat(String(m.id));
+          const meta = this.store.metas().find((c) => c.id === this.store.activeId);
+          this.agentMode = !!meta?.agentMode; this.chatMode = this.agentMode ? 'agent' : 'ask';
+          this.post({ type: 'history', messages: this.store.active().messages });
+          this.postChatMode(); this.postChats();
+          return;
+        }
+        case 'renameChat': {
+          this.store.renameChat(String(m.id), String(m.title ?? ''));
+          this.postChats();
           return;
         }
         case 'regenerate': return await this.regenerate();
@@ -422,7 +430,7 @@ export class ChatController {
           if (um && um.role === 'user') { msgs.length = Number(m.index); this.store.save(); this.post({ type: 'history', messages: msgs }); this.post({ type: 'restoreInput', text: um.content }); }
           return;
         }
-        case 'agentToggle': this.agentMode = !!m.on; this.chatMode = this.agentMode ? 'agent' : 'ask'; this.store.setAgentMode(this.store.activeId, this.agentMode); this.postChatMode(); this.postChats(); return;
+        case 'agentToggle': this.agentMode = !!m.on; this.chatMode = this.agentMode ? 'agent' : 'ask'; this.store.setAgentMode(this.store.activeId, this.agentMode); this.postChatMode(); return;
         case 'setChatMode': {
           const mode = String(m.mode) as ChatMode;
           if (!['ask', 'agent', 'plan', 'debug', 'multitask'].includes(mode)) return;
@@ -435,7 +443,7 @@ export class ChatController {
           this.agentMode = mode === 'agent' || mode === 'plan' || mode === 'debug';
           this.store.setAgentMode(this.store.activeId, this.agentMode);
           if (mode === 'multitask' && !this.compareModelId) this.post({ type: 'openActionSub', sub: 'multitask' });
-          this.postChatMode(); this.postChats();
+          this.postChatMode();
           return;
         }
         case 'openMcpSettings':
@@ -446,14 +454,12 @@ export class ChatController {
         case 'reloadSkills': this.refreshSkills(); return;
         case 'selectModel': return await this.selectModel(String(m.id));
         case 'addModel': return this.handleAddModel(String(m.slug));
-        case 'setOpenRouterKey': this.deps.secrets.set(OPENROUTER_KEY_ID, String(m.key)); this.post({ type: 'openRouterKeySet', set: true }); return;
-        case 'setFireworksKey': this.deps.secrets.set(FIREWORKS_KEY_ID, String(m.key)); await this.postDev(); return;
+        case 'setOpenRouterKey':
+          return this.stopForPolicyViolation('Cloud models are not allowed.');
+        case 'setFireworksKey':
+          return this.stopForPolicyViolation('Developer mode and cloud models are not allowed.');
         case 'selectDevModel':
-          await this.unloadLocalModel();
-          this.devModel = String(m.slug) || null;
-          this.selected = null;
-          this.postContextWindow();
-          return;
+          return this.stopForPolicyViolation('Developer mode and cloud models are not allowed.', String(m.slug || ''));
         case 'downloadModel': await (await this.ensureClient()).download(String(m.catalogId)); return;
         case 'indexWorkspace': {
           if (this.ragIndexing) return;
@@ -470,15 +476,11 @@ export class ChatController {
           } catch (e) {
             this.banner(`Indexing failed: ${e instanceof Error ? e.message : e}`);
             if (rag) this.post({ type: 'ragStatus', stats: rag.stats(), indexing: false });
-          } finally {
-            this.ragIndexing = false;
-            await this.restartLocalIfSelected();
-          }
+          } finally { this.ragIndexing = false; }
           return;
         }
         case 'installBinary': await (await this.ensureClient()).installBinary(); return;
         case 'killForeign': await (await this.ensureClient()).foreignKill(m.pids); return;
-        case 'retryModelAfterKill': return await this.retryModelAfterKill(m.pids, String(m.modelId ?? ''));
         case 'excludeContext': this.excluded.add(String(m.id)); return;
         case 'insertCode': this.deps.writeClipboard(String(m.code)); this.deps.showInfo('Code copied to clipboard.'); return;
         case 'applyCode': this.deps.writeClipboard(String(m.code)); this.deps.showInfo('Code copied to clipboard — paste into your editor to apply.'); return;
@@ -504,7 +506,6 @@ export class ChatController {
           if (!picks.length) return;
           const client = await this.ensureClient();
           await this.docsService().indexFiles(client, picks, (n, t) => this.post({ type: 'docsProgress', done: n, total: t }));
-          await this.restartLocalIfSelected();
           this.post({ type: 'docsStatus', stats: this.docsService().stats() }); return;
         }
         case 'attachImage': {
@@ -542,7 +543,7 @@ export class ChatController {
           const rel = defaultRulesRel(this.root);
           const abs = join(this.root, rel);
           try { readFileSync(abs); } catch {
-            writeFileSync(abs, '# Project rules\n\nAdd instructions FortressChat should follow in this repo.\n', 'utf8');
+            writeFileSync(abs, '# Project rules\n\nAdd instructions Fortress Code should follow in this repo.\n', 'utf8');
           }
           await this.deps.openPath(abs);
           return;
@@ -554,27 +555,6 @@ export class ChatController {
       }
     } catch (e) {
       this.banner(String(e));
-    }
-  }
-
-
-  /** Kill foreign llama-server processes then retry starting the selected model. */
-  private async retryModelAfterKill(pids: unknown, modelId: string): Promise<void> {
-    const killPids = (Array.isArray(pids) ? pids : []).map((p) => Number(p)).filter((p) => p > 0);
-    if (!modelId || !killPids.length) {
-      this.banner('Nothing to retry — pick a model again.');
-      return;
-    }
-    try {
-      this.banner('Stopping other models…');
-      await (await this.ensureClient()).foreignKill(killPids);
-      await new Promise((r) => setTimeout(r, 2000));
-      this.banner('Starting model…');
-      await this.selectModel(modelId);
-      const status = this.client ? await this.client.status().catch(() => null) : null;
-      if (status?.state === 'ready') this.post({ type: 'clearBanner' });
-    } catch (e) {
-      this.banner(`Could not restart model: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -593,8 +573,6 @@ export class ChatController {
         if (msg.includes('428')) this.banner('This model needs to be downloaded first — click it to download.');
         else this.banner(msg);
       }
-    } else {
-      await this.unloadLocalModel();
     }
     await this.pushStatus();
     this.postContextWindow();
@@ -603,7 +581,10 @@ export class ChatController {
 
   private handleAddModel(slug: string): void {
     const reason = explainBlock(slug);
-    if (reason) { this.post({ type: 'addBlocked', slug, reason }); return; }
+    if (reason) {
+      this.stopForPolicyViolation(reason, slug);
+      return;
+    }
     this.post({ type: 'addAccepted', slug });
   }
 
@@ -677,7 +658,10 @@ export class ChatController {
           this.post({ type: 'compareDone', side: 'A', content: session.messages[session.messages.length - 1]?.content ?? '' });
         }
       } else if (this.agentMode) {
-        if (!root) { this.banner('Open a folder for agent mode.'); throw new Error('no workspace'); }
+        if (!root) {
+          this.banner('Agent mode needs a project folder. Use File → Open Folder.');
+          throw new Error('agent-needs-folder');
+        }
         await runAgentTurn(target, session, sys, (step) => this.post({ type: 'agentStep', step }), this.generating.signal, {
           extraTools: this.mcpTools, toolExtras: this.toolExtras(checkpoint ?? undefined), workspaceRoot: root,
           execute: (n, a, w, ex) => executeMacTool(n, a, w, ex, this.macToolDeps()),

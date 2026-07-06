@@ -12,8 +12,8 @@ function makeDeps() {
   const posts: any[] = [];
   const userDataDir = mkdtempSync(join(tmpdir(), 'fc-app-'));
   const settings = new FileMemento(join(userDataDir, 'settings.json'));
-  settings.update('fortressChat.mcpServers', []);
-  settings.update('fortressChat.skillDirectories', ['.fortress/skills']);
+  settings.update('fortressCode.mcpServers', []);
+  settings.update('fortressCode.skillDirectories', ['.fortress/skills']);
   const saveFile = vi.fn(async () => {});
   const deps = {
     userDataDir,
@@ -31,13 +31,14 @@ function makeDeps() {
     openChatPanel: vi.fn(),
     openSettingsFile: vi.fn(async () => {}),
     showInfo: vi.fn(),
+    policyFatal: vi.fn(),
   };
   return { deps, posts };
 }
 
 function seedChat(userDataDir: string, id: string, title: string, messages: { role: string; content: string }[]) {
   writeFileSync(join(userDataDir, 'sessions.json'), JSON.stringify({
-    'fortressChat.chats': {
+    'fortressCode.chats': {
       activeId: id,
       metas: [{ id, title }],
       messagesById: { [id]: messages },
@@ -57,12 +58,22 @@ describe('ChatController', () => {
     c.dispose();
   });
 
-  it('setOpenRouterKey stores the key and confirms', async () => {
+  it('setOpenRouterKey triggers a policy fatal (cloud models disabled)', async () => {
     const { deps, posts } = makeDeps();
     const c = new ChatController(deps);
     await c.onMessage({ type: 'setOpenRouterKey', key: 'sk-or-xyz' });
-    expect(deps.secrets.get(OPENROUTER_KEY_ID)).toBe('sk-or-xyz');
-    expect(posts.at(-1)).toEqual({ type: 'openRouterKeySet', set: true });
+    expect(deps.secrets.get(OPENROUTER_KEY_ID)).toBeUndefined();
+    expect(deps.policyFatal).toHaveBeenCalledOnce();
+    expect(posts.some((p) => p.type === 'policyFatal')).toBe(true);
+    c.dispose();
+  });
+
+  it('addModel with a non-US slug triggers policy fatal and quits', async () => {
+    const { deps, posts } = makeDeps();
+    const c = new ChatController(deps);
+    c.onMessage({ type: 'addModel', slug: 'deepseek/deepseek-chat' });
+    expect(deps.policyFatal).toHaveBeenCalledOnce();
+    expect(posts.some((p) => p.type === 'policyFatal')).toBe(true);
     c.dispose();
   });
 
@@ -150,7 +161,7 @@ describe('ChatController', () => {
   it('searchChats posts ranked metas', async () => {
     const { deps, posts } = makeDeps();
     writeFileSync(join(deps.userDataDir, 'sessions.json'), JSON.stringify({
-      'fortressChat.chats': {
+      'fortressCode.chats': {
         activeId: 'a',
         metas: [{ id: 'a', title: 'Banking questions' }, { id: 'b', title: 'Other' }],
         messagesById: { a: [{ role: 'user', content: 'banking help' }], b: [{ role: 'user', content: 'unrelated' }] },

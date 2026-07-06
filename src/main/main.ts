@@ -1,14 +1,14 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell, safeStorage, clipboard, nativeTheme } from 'electron';
+import { app, BrowserWindow, Menu, dialog, ipcMain, shell, safeStorage, clipboard } from 'electron';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { ensureDaemon } from '../../vendor/fortress-chat/packages/extension/src/daemon';
-import { DEFAULT_SKILL_DIRS } from '../../vendor/fortress-chat/packages/extension/src/skills';
+import { ensureDaemon } from '../../vendor/fortress-code/packages/extension/src/daemon';
+import { DEFAULT_SKILL_DIRS } from '../../vendor/fortress-code/packages/extension/src/skills';
 import { ChatController } from './controller';
 import { SecretStore } from './secrets';
 import { FileMemento } from './fileMemento';
 
-const MCP_KEY = 'fortressChat.mcpServers';
-const SKILL_DIRS_KEY = 'fortressChat.skillDirectories';
+const MCP_KEY = 'fortressCode.mcpServers';
+const SKILL_DIRS_KEY = 'fortressCode.skillDirectories';
 
 let controller: ChatController | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -29,23 +29,12 @@ function broadcast(msg: unknown): void {
   panelWindow?.webContents.send('fc', msg);
 }
 
-/** Match Electron window chrome to macOS light/dark. */
-function windowBackground(): string {
-  return nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff';
-}
-
-function applyWindowTheme(win: BrowserWindow): void {
-  win.setBackgroundColor(windowBackground());
-}
-
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1100, height: 800, title: 'FortressChat',
-    backgroundColor: windowBackground(),
+    width: 1100, height: 800, title: 'Fortress Code',
     webPreferences: { preload: join(__dirname, '..', 'src', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   void win.loadFile(join(__dirname, '..', 'renderer', 'chat.html'));
-  applyWindowTheme(win);
   return win;
 }
 
@@ -55,16 +44,10 @@ function openPanelWindow(): void {
     return;
   }
   panelWindow = createWindow();
-  panelWindow.setTitle('FortressChat — Chat');
+  panelWindow.setTitle('Fortress Code — Chat');
   panelWindow.on('closed', () => { panelWindow = null; });
   panelWindow.webContents.on('did-finish-load', () => void controller?.init());
 }
-
-nativeTheme.themeSource = 'system';
-nativeTheme.on('updated', () => {
-  if (mainWindow && !mainWindow.isDestroyed()) applyWindowTheme(mainWindow);
-  if (panelWindow && !panelWindow.isDestroyed()) applyWindowTheme(panelWindow);
-});
 
 app.whenReady().then(async () => {
   mainWindow = createWindow();
@@ -107,14 +90,14 @@ app.whenReady().then(async () => {
       const r = await dialog.showMessageBox(mainWindow!, {
         type: 'question', buttons: ['Apply', 'Reject'], defaultId: 0, cancelId: 1,
         message: `${isNew ? 'Create' : 'Edit'} ${rel}?`,
-        detail: 'FortressChat agent wants to change this file.',
+        detail: 'Fortress Code agent wants to change this file.',
       });
       return r.response === 0;
     },
     approveCommand: async (command) => {
       const r = await dialog.showMessageBox(mainWindow!, {
         type: 'warning', buttons: ['Run', 'Reject'], defaultId: 1, cancelId: 1,
-        message: 'FortressChat wants to run a shell command',
+        message: 'Fortress Code wants to run a shell command',
         detail: command,
       });
       return r.response === 0;
@@ -127,13 +110,17 @@ app.whenReady().then(async () => {
       await shell.openPath(path);
     },
     showInfo: (message) => { void dialog.showMessageBox(mainWindow!, { type: 'info', message }); },
+    policyFatal: (message) => {
+      dialog.showErrorBox('FortressChat — not allowed', message);
+      app.exit(1);
+    },
   });
 
-  controller.setDevMode(Boolean(settings.get('fortressChat.devMode')));
+  controller.setDevMode(false);
   ipcMain.on('fc', (_e, m) => void controller!.onMessage(m));
   mainWindow.webContents.on('did-finish-load', () => void controller!.init());
-  const last = settings.get('fortressChat.folder');
-  if (typeof last === 'string') { controller.setFolder(last); mainWindow.setTitle(`FortressChat — ${last}`); }
+  const last = settings.get('fortressCode.folder');
+  if (typeof last === 'string') { controller.setFolder(last); mainWindow.setTitle(`Fortress Code — ${last}`); }
 
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
@@ -141,20 +128,13 @@ app.whenReady().then(async () => {
       { label: 'Open Folder…', accelerator: 'CmdOrCtrl+O', click: async () => {
         const r = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory'] });
         const root = r.filePaths[0];
-        if (root) { controller!.setFolder(root); settings.update('fortressChat.folder', root); mainWindow!.setTitle(`FortressChat — ${root}`); }
+        if (root) { controller!.setFolder(root); settings.update('fortressCode.folder', root); mainWindow!.setTitle(`Fortress Code — ${root}`); }
       } },
       { role: 'close' },
     ] },
     { label: 'Fortress', submenu: [
-      { label: 'Developer Mode (bypasses US-only governance)', accelerator: 'Ctrl+Alt+M', click: async () => {
-        const on = !settings.get('fortressChat.devMode');
-        if (on) {
-          const c = await dialog.showMessageBox(mainWindow!, { type: 'warning', buttons: ['Enable', 'Cancel'], defaultId: 1,
-            message: 'Developer Mode bypasses the US-only governance and lets you use any Fireworks model (including non-US). Continue?' });
-          if (c.response !== 0) return;
-        }
-        settings.update('fortressChat.devMode', on);
-        controller!.setDevMode(on);
+      { label: 'Developer Mode (disabled — local US models only)', accelerator: 'Ctrl+Alt+M', click: () => {
+        dialog.showErrorBox('FortressChat — not allowed', 'Developer mode is disabled. FortressChat supports local US models only.');
       } },
       { label: 'Edit Settings (MCP + Skills)…', click: async () => { await shell.openPath(settingsPath(userDataDir)); } },
       { label: 'Reload MCP Servers', click: () => void controller?.onMessage({ type: 'reloadMcp' }) },
