@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell, safeStorage, clipboard } from 'electron';
+import { app, BrowserWindow, Menu, dialog, ipcMain, shell, safeStorage, clipboard, nativeTheme } from 'electron';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { ensureDaemon } from '../../vendor/fortress-chat/packages/extension/src/daemon';
@@ -29,12 +29,23 @@ function broadcast(msg: unknown): void {
   panelWindow?.webContents.send('fc', msg);
 }
 
+/** Match Electron window chrome to macOS light/dark. */
+function windowBackground(): string {
+  return nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff';
+}
+
+function applyWindowTheme(win: BrowserWindow): void {
+  win.setBackgroundColor(windowBackground());
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1100, height: 800, title: 'FortressChat',
+    backgroundColor: windowBackground(),
     webPreferences: { preload: join(__dirname, '..', 'src', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   void win.loadFile(join(__dirname, '..', 'renderer', 'chat.html'));
+  applyWindowTheme(win);
   return win;
 }
 
@@ -48,6 +59,12 @@ function openPanelWindow(): void {
   panelWindow.on('closed', () => { panelWindow = null; });
   panelWindow.webContents.on('did-finish-load', () => void controller?.init());
 }
+
+nativeTheme.themeSource = 'system';
+nativeTheme.on('updated', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) applyWindowTheme(mainWindow);
+  if (panelWindow && !panelWindow.isDestroyed()) applyWindowTheme(panelWindow);
+});
 
 app.whenReady().then(async () => {
   mainWindow = createWindow();
