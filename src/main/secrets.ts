@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export const OPENROUTER_KEY_ID = 'fortressCode.openRouterKey';
-export const FIREWORKS_KEY_ID = 'fortressCode.fireworksKey';
+export const OPENROUTER_KEY_ID = 'fortressChat.openRouterKey';
+export const FIREWORKS_KEY_ID = 'fortressChat.fireworksKey';
 
 export interface CryptoBackend {
   encryptString(s: string): Buffer;
@@ -26,7 +26,7 @@ export class SecretStore {
     if (this.backend.isEncryptionAvailable()) {
       this.data[id] = { enc: true, value: this.backend.encryptString(v).toString('base64') };
     } else {
-      console.warn('fortress-code-mac: OS encryption unavailable; storing secret unencrypted');
+      console.warn('fortress-chat-mac: OS encryption unavailable; storing secret unencrypted');
       this.data[id] = { enc: false, value: v };
     }
     mkdirSync(dirname(this.filePath), { recursive: true });

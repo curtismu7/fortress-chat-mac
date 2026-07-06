@@ -1,14 +1,14 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell, safeStorage, clipboard } from 'electron';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { ensureDaemon } from '../../vendor/fortress-code/packages/extension/src/daemon';
-import { DEFAULT_SKILL_DIRS } from '../../vendor/fortress-code/packages/extension/src/skills';
+import { ensureDaemon } from '../../vendor/fortress-chat/packages/extension/src/daemon';
+import { DEFAULT_SKILL_DIRS } from '../../vendor/fortress-chat/packages/extension/src/skills';
 import { ChatController } from './controller';
 import { SecretStore } from './secrets';
 import { FileMemento } from './fileMemento';
 
-const MCP_KEY = 'fortressCode.mcpServers';
-const SKILL_DIRS_KEY = 'fortressCode.skillDirectories';
+const MCP_KEY = 'fortressChat.mcpServers';
+const SKILL_DIRS_KEY = 'fortressChat.skillDirectories';
 
 let controller: ChatController | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -31,7 +31,7 @@ function broadcast(msg: unknown): void {
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1100, height: 800, title: 'Fortress Code',
+    width: 1100, height: 800, title: 'FortressChat',
     webPreferences: { preload: join(__dirname, '..', 'src', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   void win.loadFile(join(__dirname, '..', 'renderer', 'chat.html'));
@@ -44,7 +44,7 @@ function openPanelWindow(): void {
     return;
   }
   panelWindow = createWindow();
-  panelWindow.setTitle('Fortress Code — Chat');
+  panelWindow.setTitle('FortressChat — Chat');
   panelWindow.on('closed', () => { panelWindow = null; });
   panelWindow.webContents.on('did-finish-load', () => void controller?.init());
 }
@@ -90,14 +90,14 @@ app.whenReady().then(async () => {
       const r = await dialog.showMessageBox(mainWindow!, {
         type: 'question', buttons: ['Apply', 'Reject'], defaultId: 0, cancelId: 1,
         message: `${isNew ? 'Create' : 'Edit'} ${rel}?`,
-        detail: 'Fortress Code agent wants to change this file.',
+        detail: 'FortressChat agent wants to change this file.',
       });
       return r.response === 0;
     },
     approveCommand: async (command) => {
       const r = await dialog.showMessageBox(mainWindow!, {
         type: 'warning', buttons: ['Run', 'Reject'], defaultId: 1, cancelId: 1,
-        message: 'Fortress Code wants to run a shell command',
+        message: 'FortressChat wants to run a shell command',
         detail: command,
       });
       return r.response === 0;
@@ -112,11 +112,11 @@ app.whenReady().then(async () => {
     showInfo: (message) => { void dialog.showMessageBox(mainWindow!, { type: 'info', message }); },
   });
 
-  controller.setDevMode(Boolean(settings.get('fortressCode.devMode')));
+  controller.setDevMode(Boolean(settings.get('fortressChat.devMode')));
   ipcMain.on('fc', (_e, m) => void controller!.onMessage(m));
   mainWindow.webContents.on('did-finish-load', () => void controller!.init());
-  const last = settings.get('fortressCode.folder');
-  if (typeof last === 'string') { controller.setFolder(last); mainWindow.setTitle(`Fortress Code — ${last}`); }
+  const last = settings.get('fortressChat.folder');
+  if (typeof last === 'string') { controller.setFolder(last); mainWindow.setTitle(`FortressChat — ${last}`); }
 
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
@@ -124,19 +124,19 @@ app.whenReady().then(async () => {
       { label: 'Open Folder…', accelerator: 'CmdOrCtrl+O', click: async () => {
         const r = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory'] });
         const root = r.filePaths[0];
-        if (root) { controller!.setFolder(root); settings.update('fortressCode.folder', root); mainWindow!.setTitle(`Fortress Code — ${root}`); }
+        if (root) { controller!.setFolder(root); settings.update('fortressChat.folder', root); mainWindow!.setTitle(`FortressChat — ${root}`); }
       } },
       { role: 'close' },
     ] },
     { label: 'Fortress', submenu: [
       { label: 'Developer Mode (bypasses US-only governance)', accelerator: 'Ctrl+Alt+M', click: async () => {
-        const on = !settings.get('fortressCode.devMode');
+        const on = !settings.get('fortressChat.devMode');
         if (on) {
           const c = await dialog.showMessageBox(mainWindow!, { type: 'warning', buttons: ['Enable', 'Cancel'], defaultId: 1,
             message: 'Developer Mode bypasses the US-only governance and lets you use any Fireworks model (including non-US). Continue?' });
           if (c.response !== 0) return;
         }
-        settings.update('fortressCode.devMode', on);
+        settings.update('fortressChat.devMode', on);
         controller!.setDevMode(on);
       } },
       { label: 'Edit Settings (MCP + Skills)…', click: async () => { await shell.openPath(settingsPath(userDataDir)); } },

@@ -37,5 +37,5 @@ export function syncRenderer(vendorMediaDir, outDir) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  syncRenderer('vendor/fortress-code/packages/extension/media', 'renderer');
+  syncRenderer('vendor/fortress-chat/packages/extension/media', 'renderer');
 }

@@ -1,13 +1,6 @@
 /*
  * Theme shim for the reused VS Code webview (chat.css/chat.js).
- * Defines every --vscode-* custom property chat.css references, since
- * Electron has no VS Code theme host to supply them.
- *
- * Enumerated via:
- *   grep -o 'var(--vscode-[a-zA-Z-]*' \
- *     vendor/fortress-code/packages/extension/media/chat.css | sort -u
- * (21 variables; --vscode-editor-background is added here too, for the
- * body background rule below, even though chat.css itself doesn't use it.)
+ * FortressChat Mac always uses a dark UI with bright white text.
  */
 
 :root {
@@ -15,15 +8,16 @@
   --vscode-badge-foreground: #ffffff;
   --vscode-button-background: #0e639c;
   --vscode-button-foreground: #ffffff;
-  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-descriptionForeground: #d0d0d0;
   --vscode-dropdown-background: #3c3c3c;
   --vscode-dropdown-border: #3c3c3c;
   --vscode-editor-background: #1e1e1e;
+  --vscode-sideBar-background: #1e1e1e;
   --vscode-editor-font-family: Consolas, 'Courier New', monospace;
   --vscode-editorWidget-background: #252526;
   --vscode-focusBorder: #007fd4;
   --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --vscode-foreground: #cccccc;
+  --vscode-foreground: #ffffff;
   --vscode-input-background: #3c3c3c;
   --vscode-input-border: #3c3c3c;
   --vscode-inputValidation-errorBackground: #5a1d1d;
@@ -31,34 +25,37 @@
   --vscode-panel-border: #333333;
   --vscode-progressBar-background: #0e70c0;
   --vscode-textCodeBlock-background: #0a0a0a;
-  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-foreground: #6cb6ff;
   --vscode-widget-border: #454545;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --vscode-badge-background: #c4c4c4;
-    --vscode-badge-foreground: #333333;
-    --vscode-button-background: #007acc;
-    --vscode-button-foreground: #ffffff;
-    --vscode-descriptionForeground: #717171;
-    --vscode-dropdown-background: #ffffff;
-    --vscode-dropdown-border: #cecece;
-    --vscode-editor-background: #ffffff;
-    --vscode-editorWidget-background: #f3f3f3;
-    --vscode-focusBorder: #0090f1;
-    --vscode-foreground: #3b3b3b;
-    --vscode-input-background: #ffffff;
-    --vscode-input-border: #cecece;
-    --vscode-inputValidation-errorBackground: #f2dede;
-    --vscode-inputValidation-errorBorder: #be1100;
-    --vscode-panel-border: #d4d4d4;
-    --vscode-progressBar-background: #0e70c0;
-    --vscode-textCodeBlock-background: #dcdcdc;
-    --vscode-textLink-foreground: #006ab1;
-    --vscode-widget-border: #d4d4d4;
-  }
+body.claude-ui,
+body.claude-ui #sidebar,
+body.claude-ui #top-bar,
+body.claude-ui #messages,
+body.claude-ui .msg,
+body.claude-ui .msg pre,
+body.claude-ui .msg.assistant,
+body.claude-ui .msg.user .user-bubble,
+body.claude-ui #input,
+body.claude-ui .chat-item,
+body.claude-ui .chat-item-title,
+body.claude-ui .sidebar-btn,
+body.claude-ui .sidebar-title,
+body.claude-ui .model-picker-trigger,
+body.claude-ui #active-model,
+body.claude-ui .composer-box,
+body.claude-ui .settings-body,
+body.claude-ui .model-row {
+  color: #ffffff;
 }
 
-/* Mac app theme shim — agent + code actions enabled (no VS Code editor integration). */
-body { background: var(--vscode-editor-background); color: var(--vscode-foreground); }
+body.claude-ui input::placeholder,
+body.claude-ui textarea::placeholder {
+  color: #b0b0b0;
+}
+
+body {
+  background: var(--vscode-editor-background);
+  color: #ffffff;
+}

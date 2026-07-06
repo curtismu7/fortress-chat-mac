@@ -1,5 +1,5 @@
-appId: org.coachcurtis.fortress-code
-productName: Fortress Code
+appId: org.coachcurtis.fortress-chat
+productName: FortressChat
 directories: { output: release }
 files:
   - dist/**

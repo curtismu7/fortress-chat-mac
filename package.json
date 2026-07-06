@@ -1,8 +1,8 @@
 {
-  "name": "fortress-code-mac",
+  "name": "fortress-chat-mac",
   "version": "0.3.0",
   "private": true,
-  "description": "Fortress Code for Mac — local-first AI chat with US-only model governance",
+  "description": "FortressChat for Mac — local-first AI chat with US-only model governance",
   "main": "dist/main.js",
   "scripts": {
     "sync": "node scripts/sync-renderer.mjs",

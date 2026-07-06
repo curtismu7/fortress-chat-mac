@@ -1,39 +1,39 @@
 import { readFileSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadPolicy, localEntries, explainBlock, type PolicyEntry, type StatusResponse } from '@fortress-code/shared';
-import { DaemonClient } from '../../vendor/fortress-code/packages/extension/src/daemon';
-import { RagService } from '../../vendor/fortress-code/packages/extension/src/rag/service';
-import { Debouncer } from '../../vendor/fortress-code/packages/extension/src/rag/watcher';
-import { SessionStore } from '../../vendor/fortress-code/packages/extension/src/sessionStore';
-import { Session } from '../../vendor/fortress-code/packages/extension/src/chat/session';
-import { splitThink } from '../../vendor/fortress-code/packages/extension/src/reasoning';
-import { resolveTarget, type ResolvedTarget } from '../../vendor/fortress-code/packages/extension/src/providers/target';
-import { resolveDevTarget } from '../../vendor/fortress-code/packages/extension/src/providers/dev';
-import { DEV_PRESETS } from '../../vendor/fortress-code/packages/extension/src/devPresets';
-import { streamChat, type Usage } from '../../vendor/fortress-code/packages/extension/src/providers/stream';
-import { runAgentTurn } from '../../vendor/fortress-code/packages/extension/src/agent/loop';
-import { buildContextPreamble, parseMentions, capContent, type ChatContext, type AttachedFile } from '../../vendor/fortress-code/packages/extension/src/context';
-import { Prefs } from '../../vendor/fortress-code/packages/extension/src/prefs';
-import { searchChats } from '../../vendor/fortress-code/packages/extension/src/chatSearch';
-import { exportMarkdown } from '../../vendor/fortress-code/packages/extension/src/exportChat';
-import { MemoryStore } from '../../vendor/fortress-code/packages/extension/src/memory';
-import { DocsService } from '../../vendor/fortress-code/packages/extension/src/docsService';
-import { McpClient, parseMcpConfigs, type McpServerConfig } from '../../vendor/fortress-code/packages/extension/src/mcpClient';
-import { webSearch } from '../../vendor/fortress-code/packages/extension/src/webSearch';
-import { speakText } from '../../vendor/fortress-code/packages/extension/src/voice';
-import { loadProjectRules, defaultRulesRel } from '../../vendor/fortress-code/packages/extension/src/projectRules';
-import { AgentCheckpoint } from '../../vendor/fortress-code/packages/extension/src/agentCheckpoint';
-import { mentionCandidates } from '../../vendor/fortress-code/packages/extension/src/mentionFiles';
-import { discoverSkills, DEFAULT_SKILL_DIRS, type Skill } from '../../vendor/fortress-code/packages/extension/src/skills';
+import { loadPolicy, localEntries, explainBlock, type PolicyEntry, type StatusResponse } from '@fortress-chat/shared';
+import { DaemonClient } from '../../vendor/fortress-chat/packages/extension/src/daemon';
+import { RagService } from '../../vendor/fortress-chat/packages/extension/src/rag/service';
+import { Debouncer } from '../../vendor/fortress-chat/packages/extension/src/rag/watcher';
+import { SessionStore } from '../../vendor/fortress-chat/packages/extension/src/sessionStore';
+import { Session } from '../../vendor/fortress-chat/packages/extension/src/chat/session';
+import { splitThink } from '../../vendor/fortress-chat/packages/extension/src/reasoning';
+import { resolveTarget, type ResolvedTarget } from '../../vendor/fortress-chat/packages/extension/src/providers/target';
+import { resolveDevTarget } from '../../vendor/fortress-chat/packages/extension/src/providers/dev';
+import { DEV_PRESETS } from '../../vendor/fortress-chat/packages/extension/src/devPresets';
+import { streamChat, type Usage } from '../../vendor/fortress-chat/packages/extension/src/providers/stream';
+import { runAgentTurn } from '../../vendor/fortress-chat/packages/extension/src/agent/loop';
+import { buildContextPreamble, parseMentions, capContent, type ChatContext, type AttachedFile } from '../../vendor/fortress-chat/packages/extension/src/context';
+import { Prefs } from '../../vendor/fortress-chat/packages/extension/src/prefs';
+import { searchChats } from '../../vendor/fortress-chat/packages/extension/src/chatSearch';
+import { exportMarkdown } from '../../vendor/fortress-chat/packages/extension/src/exportChat';
+import { MemoryStore } from '../../vendor/fortress-chat/packages/extension/src/memory';
+import { DocsService } from '../../vendor/fortress-chat/packages/extension/src/docsService';
+import { McpClient, parseMcpConfigs, type McpServerConfig } from '../../vendor/fortress-chat/packages/extension/src/mcpClient';
+import { webSearch } from '../../vendor/fortress-chat/packages/extension/src/webSearch';
+import { speakText } from '../../vendor/fortress-chat/packages/extension/src/voice';
+import { loadProjectRules, defaultRulesRel } from '../../vendor/fortress-chat/packages/extension/src/projectRules';
+import { AgentCheckpoint } from '../../vendor/fortress-chat/packages/extension/src/agentCheckpoint';
+import { mentionCandidates } from '../../vendor/fortress-chat/packages/extension/src/mentionFiles';
+import { discoverSkills, DEFAULT_SKILL_DIRS, type Skill } from '../../vendor/fortress-chat/packages/extension/src/skills';
 import { FileMemento } from './fileMemento';
 import { SecretStore, OPENROUTER_KEY_ID, FIREWORKS_KEY_ID } from './secrets';
 import { executeMacTool, resolveInWorkspace } from './macTools';
 
-const SYSTEM_PROMPT = 'You are Fortress Code, a helpful local coding assistant.';
-const DEV_MODE_KEY = 'fortressCode.devMode';
-const MCP_KEY = 'fortressCode.mcpServers';
-const SKILL_DIRS_KEY = 'fortressCode.skillDirectories';
+const SYSTEM_PROMPT = 'You are FortressChat, a helpful local coding assistant.';
+const DEV_MODE_KEY = 'fortressChat.devMode';
+const MCP_KEY = 'fortressChat.mcpServers';
+const SKILL_DIRS_KEY = 'fortressChat.skillDirectories';
 
 const MODE_PROMPTS: Record<string, string> = {
   plan: 'You are in plan mode. Outline a clear step-by-step plan before editing files. Discuss tradeoffs and wait for confirmation before applying changes unless the user asked you to implement immediately.',
@@ -96,7 +96,7 @@ export class ChatController {
   get folder(): string | null { return this.root; }
 
   private post(msg: unknown): void { this.deps.post(msg); }
-  private banner(message: string): void { this.post({ type: 'error', message: (message && message.trim()) ? message : 'Fortress Code error (no details)' }); }
+  private banner(message: string): void { this.post({ type: 'error', message: (message && message.trim()) ? message : 'FortressChat error (no details)' }); }
 
   private async ensureClient(): Promise<DaemonClient> {
     if (!this.client) this.client = await this.deps.connect();
@@ -163,6 +163,13 @@ export class ChatController {
     this.post({ type: 'chatMode', mode: this.chatMode, agentOn: this.agentMode, compareId: this.compareModelId, agentCapable });
   }
 
+  /** Restore agent toggle from the active chat's persisted meta (init + switch). */
+  private restoreAgentModeFromActiveChat(): void {
+    const meta = this.store.metas().find((c) => c.id === this.store.activeId);
+    this.agentMode = !!meta?.agentMode;
+    this.chatMode = this.agentMode ? 'agent' : 'ask';
+  }
+
   private postAgentUndo(): void {
     this.post({ type: 'agentUndo', available: !!(this.lastCheckpoint && this.lastCheckpoint.hasChanges()) });
   }
@@ -218,6 +225,7 @@ export class ChatController {
     this.postChats();
     await this.pushStatus();
     this.postAgentUndo();
+    this.restoreAgentModeFromActiveChat();
     this.postChatMode();
     this.post({ type: 'context', chips: [] });
   }
@@ -231,7 +239,7 @@ export class ChatController {
       await this.initMcp();
       await this.pushFullState();
     } catch (e) {
-      this.banner(`Could not start the Fortress Code daemon: ${e}`);
+      this.banner(`Could not start the FortressChat daemon: ${e}`);
     }
   }
 
@@ -362,8 +370,23 @@ export class ChatController {
           return;
         case 'send': return await this.handleSend(String(m.text));
         case 'cancel': this.generating?.abort(); return;
-        case 'newChat': this.generating?.abort(); this.store.newChat(); this.post({ type: 'history', messages: [] }); this.postChats(); return;
-        case 'switchChat': this.generating?.abort(); this.store.switchTo(String(m.id)); this.post({ type: 'history', messages: this.store.active().messages }); this.postChats(); return;
+        case 'newChat': {
+          this.generating?.abort();
+          const agent = !!m.agent;
+          this.store.newChat(agent);
+          this.agentMode = agent; this.chatMode = agent ? 'agent' : 'ask';
+          this.post({ type: 'history', messages: [] });
+          this.postChatMode(); this.postChats();
+          return;
+        }
+        case 'switchChat': {
+          this.generating?.abort();
+          this.store.switchTo(String(m.id));
+          this.restoreAgentModeFromActiveChat();
+          this.post({ type: 'history', messages: this.store.active().messages });
+          this.postChatMode(); this.postChats();
+          return;
+        }
         case 'regenerate': return await this.regenerate();
         case 'editLoad': {
           const msgs = this.store.active().messages;
@@ -371,7 +394,7 @@ export class ChatController {
           if (um && um.role === 'user') { msgs.length = Number(m.index); this.store.save(); this.post({ type: 'history', messages: msgs }); this.post({ type: 'restoreInput', text: um.content }); }
           return;
         }
-        case 'agentToggle': this.agentMode = !!m.on; this.chatMode = this.agentMode ? 'agent' : 'ask'; this.postChatMode(); return;
+        case 'agentToggle': this.agentMode = !!m.on; this.chatMode = this.agentMode ? 'agent' : 'ask'; this.store.setAgentMode(this.store.activeId, this.agentMode); this.postChatMode(); this.postChats(); return;
         case 'setChatMode': {
           const mode = String(m.mode) as ChatMode;
           if (!['ask', 'agent', 'plan', 'debug', 'multitask'].includes(mode)) return;
@@ -382,8 +405,9 @@ export class ChatController {
           }
           this.chatMode = mode;
           this.agentMode = mode === 'agent' || mode === 'plan' || mode === 'debug';
+          this.store.setAgentMode(this.store.activeId, this.agentMode);
           if (mode === 'multitask' && !this.compareModelId) this.post({ type: 'openActionSub', sub: 'multitask' });
-          this.postChatMode();
+          this.postChatMode(); this.postChats();
           return;
         }
         case 'openMcpSettings':
@@ -480,7 +504,7 @@ export class ChatController {
           const rel = defaultRulesRel(this.root);
           const abs = join(this.root, rel);
           try { readFileSync(abs); } catch {
-            writeFileSync(abs, '# Project rules\n\nAdd instructions Fortress Code should follow in this repo.\n', 'utf8');
+            writeFileSync(abs, '# Project rules\n\nAdd instructions FortressChat should follow in this repo.\n', 'utf8');
           }
           await this.deps.openPath(abs);
           return;

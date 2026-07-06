@@ -12,8 +12,8 @@ function makeDeps() {
   const posts: any[] = [];
   const userDataDir = mkdtempSync(join(tmpdir(), 'fc-app-'));
   const settings = new FileMemento(join(userDataDir, 'settings.json'));
-  settings.update('fortressCode.mcpServers', []);
-  settings.update('fortressCode.skillDirectories', ['.fortress/skills']);
+  settings.update('fortressChat.mcpServers', []);
+  settings.update('fortressChat.skillDirectories', ['.fortress/skills']);
   const saveFile = vi.fn(async () => {});
   const deps = {
     userDataDir,
@@ -37,7 +37,7 @@ function makeDeps() {
 
 function seedChat(userDataDir: string, id: string, title: string, messages: { role: string; content: string }[]) {
   writeFileSync(join(userDataDir, 'sessions.json'), JSON.stringify({
-    'fortressCode.chats': {
+    'fortressChat.chats': {
       activeId: id,
       metas: [{ id, title }],
       messagesById: { [id]: messages },
@@ -150,7 +150,7 @@ describe('ChatController', () => {
   it('searchChats posts ranked metas', async () => {
     const { deps, posts } = makeDeps();
     writeFileSync(join(deps.userDataDir, 'sessions.json'), JSON.stringify({
-      'fortressCode.chats': {
+      'fortressChat.chats': {
         activeId: 'a',
         metas: [{ id: 'a', title: 'Banking questions' }, { id: 'b', title: 'Other' }],
         messagesById: { a: [{ role: 'user', content: 'banking help' }], b: [{ role: 'user', content: 'unrelated' }] },
