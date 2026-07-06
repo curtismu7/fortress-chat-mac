@@ -1,8 +1,15 @@
 import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const shared = {
   bundle: true, platform: 'node', target: 'node20', format: 'cjs', sourcemap: true,
-  alias: { '@fortress-code/shared': './vendor/fortress-code/packages/shared/src/index.ts' },
+  alias: {
+    '@fortress-code/shared': './vendor/fortress-code/packages/shared/src/index.ts',
+    vscode: join(HERE, 'src/main/vscodeStub.ts'),
+  },
 };
 
 // Electron main bundle (electron is provided at runtime)

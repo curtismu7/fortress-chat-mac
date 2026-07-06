@@ -6,9 +6,22 @@ governance. This app wraps the shared logic from the
 which is included here as a git submodule (`vendor/fortress-code`), and bundles
 its TypeScript sources directly via esbuild.
 
-Built from the fortress-code monorepo via git submodule.
+Built from the fortress-code monorepo via git submodule (pinned to `main`).
 
-## What it does
+## Feature parity
+
+The Mac app tracks the VS Code extension chat UI and protocol:
+
+- Claude-style model picker, settings drawer, composer `+` menu (modes, skills, MCP, context)
+- **Skills** — `SKILL.md` from `fortressCode.skillDirectories` in app settings
+- **MCP servers** — stdio tools in Agent mode via `fortressCode.mcpServers` in settings
+- Agent mode, plan/debug/multitask, compare models, personas, memory, `@docs`, images, voice (TTS)
+- Project rules (`.fortress/rules.md`), agent undo, @-mentions
+
+Edit MCP/skills paths: **Fortress → Edit Settings (MCP + Skills)…** (`~/Library/Application Support/fortress-code-mac/settings.json`).
+
+Code block **Insert/Apply** copies to the clipboard (no in-app editor). **Open in editor tab** opens a second chat window.
+
 
 Fortress Code for Mac is a native menu-bar-friendly Electron shell around the
 same chat UI as the Fortress Code VS Code extension: local, US-governed model

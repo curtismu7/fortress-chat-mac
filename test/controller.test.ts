@@ -4,28 +4,37 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatController } from '../src/main/controller';
 import { SecretStore, OPENROUTER_KEY_ID } from '../src/main/secrets';
+import { FileMemento } from '../src/main/fileMemento';
 
 const backend = { encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString(), isEncryptionAvailable: () => true };
 
 function makeDeps() {
   const posts: any[] = [];
   const userDataDir = mkdtempSync(join(tmpdir(), 'fc-app-'));
+  const settings = new FileMemento(join(userDataDir, 'settings.json'));
+  settings.update('fortressCode.mcpServers', []);
+  settings.update('fortressCode.skillDirectories', ['.fortress/skills']);
   const saveFile = vi.fn(async () => {});
   const deps = {
     userDataDir,
+    settings,
     connect: vi.fn(async () => ({ status: async () => ({ state: 'idle', modelId: null, endpoint: null, download: null, crashLog: null, ram: { totalBytes: 1, availableBytes: 1 }, binaryInstalled: false, downloadedModelIds: [], downloadError: null, embed: { state: 'idle', modelId: null, endpoint: null } }) }) as any),
     post: (m: any) => posts.push(m),
     openPath: vi.fn(async () => {}),
     saveFile,
     secrets: new SecretStore(join(userDataDir, 'secrets.json'), backend),
+    pickDocuments: vi.fn(async () => []),
+    pickImage: vi.fn(async () => null),
+    approveEdit: vi.fn(async () => true),
+    approveCommand: vi.fn(async () => true),
+    writeClipboard: vi.fn(),
+    openChatPanel: vi.fn(),
+    openSettingsFile: vi.fn(async () => {}),
+    showInfo: vi.fn(),
   };
   return { deps, posts };
 }
 
-// Seeds a single chat with the given messages directly into sessions.json, in the
-// shape SessionStore.load expects (nested under its FileMemento key), so tests can
-// exercise fork/search/export without needing a live model to populate history via
-// handleSend.
 function seedChat(userDataDir: string, id: string, title: string, messages: { role: string; content: string }[]) {
   writeFileSync(join(userDataDir, 'sessions.json'), JSON.stringify({
     'fortressCode.chats': {
@@ -37,14 +46,14 @@ function seedChat(userDataDir: string, id: string, title: string, messages: { ro
 }
 
 describe('ChatController', () => {
-  it('init posts policy, prefs, key state, dev mode, history, chats', async () => {
+  it('init posts full state including skills, personas, mcp', async () => {
     const { deps, posts } = makeDeps();
     const c = new ChatController(deps);
     await c.init();
     const types = posts.map((p) => p.type);
-    for (const t of ['policy', 'prefs', 'openRouterKeySet', 'devMode', 'history', 'chats']) expect(types).toContain(t);
-    const prefsPost = posts.find((p) => p.type === 'prefs');
-    expect(prefsPost).toEqual({ type: 'prefs', prompts: [], params: {} });
+    for (const t of ['policy', 'prefs', 'personas', 'skills', 'mcpStatus', 'openRouterKeySet', 'devMode', 'history', 'chats', 'memory', 'projectRules']) {
+      expect(types).toContain(t);
+    }
     c.dispose();
   });
 
@@ -80,12 +89,24 @@ describe('ChatController', () => {
     c.dispose();
   });
 
-  it('insertCode banners not-available; agentToggle is a no-op', async () => {
+  it('insertCode copies to clipboard; agentToggle updates chat mode', async () => {
     const { deps, posts } = makeDeps();
     const c = new ChatController(deps);
     await c.onMessage({ type: 'insertCode', code: 'x' });
-    expect(posts.some((p) => p.type === 'error' && /not available/i.test(p.message))).toBe(true);
-    await c.onMessage({ type: 'agentToggle', on: true }); // must not throw or post an error
+    expect(deps.writeClipboard).toHaveBeenCalledWith('x');
+    await c.onMessage({ type: 'agentToggle', on: true });
+    expect(posts.some((p) => p.type === 'chatMode' && p.agentOn === true)).toBe(true);
+    c.dispose();
+  });
+
+  it('setSkill stores skill on active chat meta', async () => {
+    const { deps, posts } = makeDeps();
+    const c = new ChatController(deps);
+    await c.init();
+    await c.onMessage({ type: 'setSkill', id: 'abc123' });
+    const chats = posts.filter((p) => p.type === 'chats').at(-1);
+    const active = chats.metas.find((m: any) => m.id === chats.activeId);
+    expect(active.skillId).toBe('abc123');
     c.dispose();
   });
 
@@ -103,7 +124,7 @@ describe('ChatController', () => {
   it('setParams stores validated params and re-posts prefs', async () => {
     const { deps, posts } = makeDeps();
     const c = new ChatController(deps);
-    await c.onMessage({ type: 'setParams', params: { temperature: 0.5, top_p: 5 } }); // top_p out of range: dropped
+    await c.onMessage({ type: 'setParams', params: { temperature: 0.5, top_p: 5 } });
     expect(posts.at(-1)).toEqual({ type: 'prefs', prompts: [], params: { temperature: 0.5 } });
     c.dispose();
   });

@@ -60,7 +60,5 @@
   }
 }
 
-/* v1: no editor, no agent mode */
-label:has(#agent-toggle) { display: none; }
-button[data-act="insert"], button[data-act="apply"] { display: none; }
+/* Mac app theme shim — agent + code actions enabled (no VS Code editor integration). */
 body { background: var(--vscode-editor-background); color: var(--vscode-foreground); }

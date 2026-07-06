@@ -1,64 +1,96 @@
-import { readFileSync, watch, type FSWatcher } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { readFileSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadPolicy, localEntries, explainBlock, type PolicyEntry, type StatusResponse } from '@fortress-code/shared';
 import { DaemonClient } from '../../vendor/fortress-code/packages/extension/src/daemon';
 import { RagService } from '../../vendor/fortress-code/packages/extension/src/rag/service';
 import { Debouncer } from '../../vendor/fortress-code/packages/extension/src/rag/watcher';
 import { SessionStore } from '../../vendor/fortress-code/packages/extension/src/sessionStore';
+import { Session } from '../../vendor/fortress-code/packages/extension/src/chat/session';
 import { splitThink } from '../../vendor/fortress-code/packages/extension/src/reasoning';
 import { resolveTarget, type ResolvedTarget } from '../../vendor/fortress-code/packages/extension/src/providers/target';
 import { resolveDevTarget } from '../../vendor/fortress-code/packages/extension/src/providers/dev';
 import { DEV_PRESETS } from '../../vendor/fortress-code/packages/extension/src/devPresets';
 import { streamChat, type Usage } from '../../vendor/fortress-code/packages/extension/src/providers/stream';
+import { runAgentTurn } from '../../vendor/fortress-code/packages/extension/src/agent/loop';
 import { buildContextPreamble, parseMentions, capContent, type ChatContext, type AttachedFile } from '../../vendor/fortress-code/packages/extension/src/context';
 import { Prefs } from '../../vendor/fortress-code/packages/extension/src/prefs';
 import { searchChats } from '../../vendor/fortress-code/packages/extension/src/chatSearch';
 import { exportMarkdown } from '../../vendor/fortress-code/packages/extension/src/exportChat';
+import { MemoryStore } from '../../vendor/fortress-code/packages/extension/src/memory';
+import { DocsService } from '../../vendor/fortress-code/packages/extension/src/docsService';
+import { McpClient, parseMcpConfigs, type McpServerConfig } from '../../vendor/fortress-code/packages/extension/src/mcpClient';
+import { webSearch } from '../../vendor/fortress-code/packages/extension/src/webSearch';
+import { speakText } from '../../vendor/fortress-code/packages/extension/src/voice';
+import { loadProjectRules, defaultRulesRel } from '../../vendor/fortress-code/packages/extension/src/projectRules';
+import { AgentCheckpoint } from '../../vendor/fortress-code/packages/extension/src/agentCheckpoint';
+import { mentionCandidates } from '../../vendor/fortress-code/packages/extension/src/mentionFiles';
+import { discoverSkills, DEFAULT_SKILL_DIRS, type Skill } from '../../vendor/fortress-code/packages/extension/src/skills';
 import { FileMemento } from './fileMemento';
 import { SecretStore, OPENROUTER_KEY_ID, FIREWORKS_KEY_ID } from './secrets';
+import { executeMacTool, resolveInWorkspace } from './macTools';
 
 const SYSTEM_PROMPT = 'You are Fortress Code, a helpful local coding assistant.';
 const DEV_MODE_KEY = 'fortressCode.devMode';
+const MCP_KEY = 'fortressCode.mcpServers';
+const SKILL_DIRS_KEY = 'fortressCode.skillDirectories';
 
-// Local stand-in for vendor agent/tools#resolveInWorkspace — reimplemented here
-// so this module never imports vscode-dependent agent tooling.
-function resolveInWorkspace(root: string, rel: string): string {
-  const abs = resolve(root, rel);
-  if (abs !== root && !abs.startsWith(root + sep)) throw new Error('outside workspace');
-  return abs;
-}
+const MODE_PROMPTS: Record<string, string> = {
+  plan: 'You are in plan mode. Outline a clear step-by-step plan before editing files. Discuss tradeoffs and wait for confirmation before applying changes unless the user asked you to implement immediately.',
+  debug: 'You are in debug mode. Focus on reproducing the issue, tracing root cause, and proposing minimal targeted fixes.',
+};
+
+type ChatMode = 'ask' | 'agent' | 'plan' | 'debug' | 'multitask';
 
 export interface ControllerDeps {
-  userDataDir: string;                         // app.getPath('userData')
-  connect: () => Promise<DaemonClient>;        // ensureDaemon(dist/manager/index.js)
-  post: (msg: unknown) => void;                // webContents.send bridge
-  openPath: (absPath: string) => Promise<void>; // shell.openPath wrapper
-  saveFile: (defaultName: string, content: string) => Promise<void>; // dialog.showSaveDialog + write wrapper
+  userDataDir: string;
+  settings: FileMemento;
+  connect: () => Promise<DaemonClient>;
+  post: (msg: unknown) => void;
+  openPath: (absPath: string) => Promise<void>;
+  saveFile: (defaultName: string, content: string) => Promise<void>;
   secrets: SecretStore;
+  pickDocuments: () => Promise<string[]>;
+  pickImage: () => Promise<{ mime: string; base64: string; name: string } | null>;
+  approveEdit: (rel: string, isNew: boolean) => Promise<boolean>;
+  approveCommand: (command: string) => Promise<boolean>;
+  writeClipboard: (text: string) => void;
+  openChatPanel?: () => void;
+  openSettingsFile: () => Promise<void>;
+  showInfo: (message: string) => void;
 }
 
 export class ChatController {
   private root: string | null = null;
   private client: DaemonClient | null = null;
   private rag: RagService | null = null;
+  private docs: DocsService | null = null;
+  private mcpClients: McpClient[] = [];
+  private mcpTools: object[] = [];
+  private pendingImages: { mime: string; base64: string; name: string }[] = [];
+  private compareModelId: string | null = null;
   private store: SessionStore;
-  private settings: FileMemento;
   private prefs: Prefs;
   private generating: AbortController | null = null;
+  private agentMode = false;
+  private chatMode: ChatMode = 'ask';
   private selected: PolicyEntry | null = null;
   private devMode = false;
   private devModel: string | null = null;
+  private excluded = new Set<string>();
   private poller: ReturnType<typeof setInterval> | null = null;
-  private watcher: FSWatcher | null = null;
-  private watcherStarted = false;
+  private ragWatcher: FSWatcher | null = null;
+  private skillsWatcher: FSWatcher | null = null;
+  private ragWatcherStarted = false;
+  private skillsWatcherStarted = false;
   private ragIndexing = false;
+  private lastCheckpoint: AgentCheckpoint | null = null;
+  private skills: Skill[] = [];
 
   constructor(private deps: ControllerDeps) {
     this.store = SessionStore.load(new FileMemento(join(deps.userDataDir, 'sessions.json')));
-    this.settings = new FileMemento(join(deps.userDataDir, 'settings.json'));
     this.prefs = new Prefs(new FileMemento(join(deps.userDataDir, 'prefs.json')));
-    this.devMode = !!this.settings.get(DEV_MODE_KEY);
+    this.devMode = !!deps.settings.get(DEV_MODE_KEY);
   }
 
   get folder(): string | null { return this.root; }
@@ -83,37 +115,146 @@ export class ChatController {
     return this.rag;
   }
 
+  private docsService(): DocsService {
+    if (!this.docs) this.docs = new DocsService(join(this.deps.userDataDir, 'docs-index'));
+    return this.docs;
+  }
+
+  private memoryPath(): string { return join(this.deps.userDataDir, 'memory.json'); }
+  private memoryData(): ReturnType<MemoryStore['load']> { return new MemoryStore(this.memoryPath()).load(); }
+
+  private mcpConfigs(): McpServerConfig[] {
+    return parseMcpConfigs(this.deps.settings.get(MCP_KEY));
+  }
+
+  private skillDirectories(): string[] {
+    const raw = this.deps.settings.get(SKILL_DIRS_KEY);
+    return Array.isArray(raw) ? raw.filter((d): d is string => typeof d === 'string') : [...DEFAULT_SKILL_DIRS];
+  }
+
+  private systemPromptForChat(): string {
+    const meta = this.store.metas().find((m) => m.id === this.store.activeId);
+    const persona = meta?.personaId ? this.prefs.personas().find((p) => p.id === meta.personaId) : undefined;
+    const skill = meta?.skillId ? this.skills.find((s) => s.id === meta.skillId) : undefined;
+    const mem = MemoryStore.preamble(this.memoryData());
+    const rules = loadProjectRules(this.root ?? undefined).text;
+    let base = persona?.systemPrompt?.trim() || SYSTEM_PROMPT;
+    if (skill?.body.trim()) base = `${base}\n\n[skill: ${skill.name}]\n${skill.body.trim()}`;
+    const modeHint = MODE_PROMPTS[this.chatMode] ?? '';
+    return [base, mem, rules, modeHint].filter(Boolean).join('\n\n');
+  }
+
+  private refreshSkills(): void {
+    this.skills = discoverSkills(this.skillDirectories(), this.root ?? undefined);
+    this.post({ type: 'skills', skills: this.skills });
+  }
+
+  private postMcpStatus(): void {
+    this.post({
+      type: 'mcpStatus',
+      servers: this.mcpClients.map((c) => ({
+        name: c.serverName(), connected: c.isConnected(), tools: c.toolCount(), error: c.error(),
+      })),
+    });
+  }
+
+  private postChatMode(): void {
+    const agentCapable = this.devMode && this.devModel ? true : !!this.selected?.agentCapable;
+    this.post({ type: 'chatMode', mode: this.chatMode, agentOn: this.agentMode, compareId: this.compareModelId, agentCapable });
+  }
+
+  private postAgentUndo(): void {
+    this.post({ type: 'agentUndo', available: !!(this.lastCheckpoint && this.lastCheckpoint.hasChanges()) });
+  }
+
+  private toolExtras(checkpoint?: AgentCheckpoint) {
+    const memPath = this.memoryPath();
+    return {
+      webSearch: (q: string) => webSearch(q),
+      remember: (fact: string) => {
+        const store = new MemoryStore(memPath);
+        const data = store.load();
+        data.enabled = true;
+        if (fact.trim() && !data.facts.includes(fact.trim())) data.facts.push(fact.trim());
+        store.save(data);
+        this.post({ type: 'memory', data });
+        return 'saved to local memory';
+      },
+      mcpCall: async (name: string, args: Record<string, unknown>) => {
+        for (const c of this.mcpClients) {
+          try { return await c.callTool(name, args); } catch { continue; }
+        }
+        return 'mcp tool not found';
+      },
+      onFileTouch: checkpoint ? (rel: string, abs: string) => checkpoint.capture(rel, abs) : undefined,
+      onFileRevertCapture: checkpoint ? (rel: string) => checkpoint.revert(rel) : undefined,
+    };
+  }
+
+  private async initMcp(): Promise<void> {
+    const cfgs = this.mcpConfigs();
+    for (const c of this.mcpClients) c.dispose();
+    this.mcpClients = cfgs.map((cfg) => new McpClient(cfg));
+    this.mcpTools = [];
+    for (const client of this.mcpClients) {
+      try { await client.connect(); this.mcpTools.push(...client.openAiSchemas()); } catch { /* stored on client */ }
+    }
+    this.postMcpStatus();
+  }
+
+  private async pushFullState(): Promise<void> {
+    this.post({ type: 'policy', local: localEntries(), openrouter: loadPolicy().filter((e) => e.provider === 'openrouter') });
+    this.post({ type: 'prefs', prompts: this.prefs.prompts(), params: this.prefs.params() });
+    this.post({ type: 'personas', personas: this.prefs.personas() });
+    this.post({ type: 'skills', skills: this.skills });
+    this.post({ type: 'projectRules', path: loadProjectRules(this.root ?? undefined).path ?? defaultRulesRel(this.root ?? undefined) });
+    this.post({ type: 'memory', data: this.memoryData() });
+    this.post({ type: 'folders', folders: this.store.listFolders() });
+    this.post({ type: 'docsStatus', stats: this.docsService().stats() });
+    this.postMcpStatus();
+    this.post({ type: 'openRouterKeySet', set: !!this.deps.secrets.get(OPENROUTER_KEY_ID) });
+    await this.postDev();
+    this.post({ type: 'history', messages: this.store.active().messages });
+    this.postChats();
+    await this.pushStatus();
+    this.postAgentUndo();
+    this.postChatMode();
+    this.post({ type: 'context', chips: [] });
+  }
+
   async init(): Promise<void> {
     try {
       this.client = await this.deps.connect();
-      this.post({ type: 'policy', local: localEntries(), openrouter: loadPolicy().filter((e) => e.provider === 'openrouter') });
-      this.post({ type: 'prefs', prompts: this.prefs.prompts(), params: this.prefs.params() });
-      this.post({ type: 'openRouterKeySet', set: !!this.deps.secrets.get(OPENROUTER_KEY_ID) });
-      await this.postDev();
-      this.post({ type: 'history', messages: this.store.active().messages });
-      this.postChats();
       this.poller = setInterval(() => void this.pushStatus(), 2000);
-      await this.pushStatus();
-      this.post({ type: 'context', chips: [] });
+      this.refreshSkills();
+      this.startSkillsWatcher();
+      await this.initMcp();
+      await this.pushFullState();
     } catch (e) {
       this.banner(`Could not start the Fortress Code daemon: ${e}`);
     }
   }
 
   setFolder(root: string): void {
-    if (this.watcher) { this.watcher.close(); this.watcher = null; }
-    this.watcherStarted = false;
+    if (this.ragWatcher) { this.ragWatcher.close(); this.ragWatcher = null; }
+    if (this.skillsWatcher) { this.skillsWatcher.close(); this.skillsWatcher = null; }
+    this.ragWatcherStarted = false;
+    this.skillsWatcherStarted = false;
     this.root = root;
     this.rag = null;
+    this.refreshSkills();
     const rag = this.ragService();
     if (rag) this.post({ type: 'ragStatus', stats: rag.stats(), indexing: this.ragIndexing });
+    this.post({ type: 'projectRules', path: loadProjectRules(root).path ?? defaultRulesRel(root) });
+    this.startSkillsWatcher();
   }
 
   setDevMode(on: boolean): void {
     this.devMode = on;
     if (!on) this.devModel = null;
-    this.settings.update(DEV_MODE_KEY, on);
+    this.deps.settings.update(DEV_MODE_KEY, on);
     void this.postDev();
+    this.postChatMode();
   }
 
   private async postDev(): Promise<void> {
@@ -136,24 +277,24 @@ export class ChatController {
     const last = msgs[msgs.length - 1];
     if (!last || last.role !== 'user') return;
     const text = last.content;
-    msgs.pop(); // handleSend re-adds it
+    msgs.pop();
     this.store.save();
     this.post({ type: 'history', messages: msgs });
     await this.handleSend(text);
   }
 
   private async collectContext(userText: string): Promise<ChatContext> {
-    const file: ChatContext['file'] = null;
-    const selection: ChatContext['selection'] = null;
     const root = this.root;
     const mentions: AttachedFile[] = [];
     if (root) for (const mrel of parseMentions(userText)) {
-      if (mrel === 'codebase') continue;
+      if (mrel === 'codebase' || mrel === 'docs') continue;
+      const mid = 'mention:' + mrel;
+      if (this.excluded.has(mid)) continue;
       try {
         const abs = resolveInWorkspace(root, mrel);
         const cap = capContent(readFileSync(abs, 'utf8'));
-        mentions.push({ id: 'mention:' + mrel, relPath: mrel, language: mrel.split('.').pop() ?? '', content: cap.content, truncated: cap.truncated, diagnostics: [] });
-      } catch { /* skip unreadable/escaping mention */ }
+        mentions.push({ id: mid, relPath: mrel, language: mrel.split('.').pop() ?? '', content: cap.content, truncated: cap.truncated, diagnostics: [] });
+      } catch { /* skip */ }
     }
     let codebase: ChatContext['codebase'] = null;
     const rag = this.ragService();
@@ -161,7 +302,14 @@ export class ChatController {
       try { codebase = await rag.retrieveHits(this.client, userText); }
       catch (e) { this.banner(`@codebase retrieval failed: ${e instanceof Error ? e.message : e}`); }
     }
-    return { file, selection, mentions, codebase };
+    let docs: ChatContext['docs'] = null;
+    if (parseMentions(userText).includes('docs') && this.client) {
+      try { docs = await this.docsService().retrieveHits(this.client, userText); }
+      catch (e) { this.banner(`@docs retrieval failed: ${e instanceof Error ? e.message : e}`); }
+    }
+    const images = this.pendingImages.length ? [...this.pendingImages] : undefined;
+    this.pendingImages = [];
+    return { file: null, selection: null, mentions, codebase, docs, images };
   }
 
   private async pushStatus(): Promise<void> {
@@ -172,33 +320,46 @@ export class ChatController {
       const rag = this.ragService();
       if (rag) this.post({ type: 'ragStatus', stats: rag.stats(), indexing: this.ragIndexing });
     } catch {
-      this.client = null; // daemon idle-exited; next action re-spawns
+      this.client = null;
     }
   }
 
   private startRagWatcher(): void {
-    if (this.watcherStarted) return;
+    if (this.ragWatcherStarted || !this.root) return;
     const rag = this.ragService();
-    if (!rag || !this.root) return;
-    this.watcherStarted = true;
+    if (!rag) return;
+    this.ragWatcherStarted = true;
     const debouncer = new Debouncer(1000, async () => {
-      if (!this.client) return;
-      if (this.ragIndexing) return;
+      if (!this.client || this.ragIndexing) return;
       this.ragIndexing = true;
       try {
         await rag.index(this.client, (p) => this.post({ type: 'ragProgress', progress: p }));
         this.post({ type: 'ragStatus', stats: rag.stats(), indexing: false });
-      } catch { /* transient; next save retries */ }
+      } catch { /* retry on next save */ }
       finally { this.ragIndexing = false; }
     });
     try {
-      this.watcher = watch(this.root, { recursive: true }, (_e, filename) => { if (filename) debouncer.add(filename); });
-    } catch { this.watcherStarted = false; }
+      this.ragWatcher = watch(this.root, { recursive: true }, (_e, filename) => { if (filename) debouncer.add(filename); });
+    } catch { this.ragWatcherStarted = false; }
+  }
+
+  private startSkillsWatcher(): void {
+    if (this.skillsWatcherStarted || !this.root) return;
+    const dir = join(this.root, '.fortress', 'skills');
+    this.skillsWatcherStarted = true;
+    const debouncer = new Debouncer(500, () => this.refreshSkills());
+    try {
+      this.skillsWatcher = watch(dir, { recursive: true }, () => debouncer.add(dir));
+    } catch { this.skillsWatcherStarted = false; }
   }
 
   async onMessage(m: any): Promise<void> {
     try {
       switch (m.type) {
+        case 'openChatInEditor':
+          if (this.deps.openChatPanel) this.deps.openChatPanel();
+          else this.banner('Could not open a second chat window.');
+          return;
         case 'send': return await this.handleSend(String(m.text));
         case 'cancel': this.generating?.abort(); return;
         case 'newChat': this.generating?.abort(); this.store.newChat(); this.post({ type: 'history', messages: [] }); this.postChats(); return;
@@ -210,7 +371,27 @@ export class ChatController {
           if (um && um.role === 'user') { msgs.length = Number(m.index); this.store.save(); this.post({ type: 'history', messages: msgs }); this.post({ type: 'restoreInput', text: um.content }); }
           return;
         }
-        case 'agentToggle': return; // agent mode not available in the Mac app
+        case 'agentToggle': this.agentMode = !!m.on; this.chatMode = this.agentMode ? 'agent' : 'ask'; this.postChatMode(); return;
+        case 'setChatMode': {
+          const mode = String(m.mode) as ChatMode;
+          if (!['ask', 'agent', 'plan', 'debug', 'multitask'].includes(mode)) return;
+          const agentCapable = this.devMode && this.devModel ? true : !!this.selected?.agentCapable;
+          if ((mode === 'plan' || mode === 'debug' || mode === 'agent') && !agentCapable) {
+            this.banner('This model does not support agent modes. Pick an agent-capable model.');
+            return;
+          }
+          this.chatMode = mode;
+          this.agentMode = mode === 'agent' || mode === 'plan' || mode === 'debug';
+          if (mode === 'multitask' && !this.compareModelId) this.post({ type: 'openActionSub', sub: 'multitask' });
+          this.postChatMode();
+          return;
+        }
+        case 'openMcpSettings':
+        case 'openSkillSettings':
+          await this.deps.openSettingsFile();
+          return;
+        case 'reloadMcp': await this.initMcp(); return;
+        case 'reloadSkills': this.refreshSkills(); return;
         case 'selectModel': return await this.selectModel(String(m.id));
         case 'addModel': return this.handleAddModel(String(m.slug));
         case 'setOpenRouterKey': this.deps.secrets.set(OPENROUTER_KEY_ID, String(m.key)); this.post({ type: 'openRouterKeySet', set: true }); return;
@@ -232,37 +413,82 @@ export class ChatController {
           } catch (e) {
             this.banner(`Indexing failed: ${e instanceof Error ? e.message : e}`);
             if (rag) this.post({ type: 'ragStatus', stats: rag.stats(), indexing: false });
-          } finally {
-            this.ragIndexing = false;
-          }
+          } finally { this.ragIndexing = false; }
           return;
         }
         case 'installBinary': await (await this.ensureClient()).installBinary(); return;
         case 'killForeign': await (await this.ensureClient()).foreignKill(m.pids); return;
-        case 'excludeContext': return; // no chips in the Mac app; nothing to exclude
-        case 'insertCode': this.banner('Not available in the Mac app.'); return;
-        case 'applyCode': this.banner('Not available in the Mac app.'); return;
+        case 'excludeContext': this.excluded.add(String(m.id)); return;
+        case 'insertCode': this.deps.writeClipboard(String(m.code)); this.deps.showInfo('Code copied to clipboard.'); return;
+        case 'applyCode': this.deps.writeClipboard(String(m.code)); this.deps.showInfo('Code copied to clipboard — paste into your editor to apply.'); return;
         case 'openSource': {
           if (!this.root) { this.banner('Open a folder to jump to a source.'); return; }
-          try {
-            const abs = resolveInWorkspace(this.root, String(m.file));
-            await this.deps.openPath(abs);
-          } catch (e) {
-            this.banner(`Could not open ${String(m.file)}: ${e instanceof Error ? e.message : e}`);
-          }
+          try { await this.deps.openPath(resolveInWorkspace(this.root, String(m.file))); }
+          catch (e) { this.banner(`Could not open ${String(m.file)}: ${e instanceof Error ? e.message : e}`); }
           return;
         }
         case 'savePrompt': this.prefs.savePrompt(m.prompt); this.post({ type: 'prefs', prompts: this.prefs.prompts(), params: this.prefs.params() }); return;
         case 'deletePrompt': this.prefs.deletePrompt(String(m.id)); this.post({ type: 'prefs', prompts: this.prefs.prompts(), params: this.prefs.params() }); return;
         case 'setParams': this.prefs.setParams(m.params ?? {}); this.post({ type: 'prefs', prompts: this.prefs.prompts(), params: this.prefs.params() }); return;
         case 'forkChat': this.generating?.abort(); this.store.fork(Number(m.index)); this.post({ type: 'history', messages: this.store.active().messages }); this.postChats(); return;
-        case 'searchChats': this.post({ type: 'searchResults', metas: searchChats(String(m.query ?? ''), this.store.metas(), this.store.messagesById()) }); return;
+        case 'searchChats': this.post({ type: 'searchResults', metas: searchChats(String(m.query ?? ''), this.store.metas(), this.store.messagesById(), m.folder ? String(m.folder) : undefined) }); return;
+        case 'setFolder': this.store.setFolder(this.store.activeId, m.folder ? String(m.folder) : undefined); this.post({ type: 'folders', folders: this.store.listFolders() }); this.postChats(); return;
+        case 'setMemory': {
+          const store = new MemoryStore(this.memoryPath());
+          store.save({ enabled: !!m.enabled, facts: Array.isArray(m.facts) ? m.facts.map(String) : store.load().facts });
+          this.post({ type: 'memory', data: store.load() }); return;
+        }
+        case 'indexDocs': {
+          const picks = await this.deps.pickDocuments();
+          if (!picks.length) return;
+          const client = await this.ensureClient();
+          await this.docsService().indexFiles(client, picks, (n, t) => this.post({ type: 'docsProgress', done: n, total: t }));
+          this.post({ type: 'docsStatus', stats: this.docsService().stats() }); return;
+        }
+        case 'attachImage': {
+          const img = await this.deps.pickImage();
+          if (!img) return;
+          this.pendingImages.push(img);
+          this.post({ type: 'attachedImages', count: this.pendingImages.length }); return;
+        }
+        case 'speakLast': {
+          const msgs = this.store.active().messages;
+          const last = [...msgs].reverse().find((x) => x.role === 'assistant');
+          if (last) void speakText(last.content).catch((e) => this.banner(String(e))); return;
+        }
+        case 'setCompareModel': this.compareModelId = m.id ? String(m.id) : null; if (this.compareModelId) this.chatMode = 'multitask'; this.postChatMode(); return;
+        case 'showArtifact': this.post({ type: 'artifact', html: String(m.html ?? '') }); return;
         case 'exportChat': {
           const title = this.store.metas().find((x) => x.id === this.store.activeId)?.title ?? 'Chat';
           const md = exportMarkdown(title, this.store.active().messages, new Date());
           await this.deps.saveFile(title.replace(/[^\w-]+/g, '-') + '.md', md);
           return;
         }
+        case 'listMentionFiles':
+          this.post({ type: 'mentionFiles', items: mentionCandidates(this.root ?? undefined, String(m.query ?? '')) });
+          return;
+        case 'undoAgentRun': {
+          if (!this.root || !this.lastCheckpoint?.hasChanges()) { this.banner('Nothing to undo from the last agent run.'); return; }
+          const restored = this.lastCheckpoint.restore(this.root);
+          this.lastCheckpoint = null;
+          this.postAgentUndo();
+          this.deps.showInfo(restored.length ? `Restored ${restored.length} file(s) from before the last agent run.` : 'Agent run undone.');
+          return;
+        }
+        case 'openRulesFile': {
+          if (!this.root) { this.banner('Open a folder to edit project rules.'); return; }
+          const rel = defaultRulesRel(this.root);
+          const abs = join(this.root, rel);
+          try { readFileSync(abs); } catch {
+            writeFileSync(abs, '# Project rules\n\nAdd instructions Fortress Code should follow in this repo.\n', 'utf8');
+          }
+          await this.deps.openPath(abs);
+          return;
+        }
+        case 'savePersona': this.prefs.savePersona(m.persona); this.post({ type: 'personas', personas: this.prefs.personas() }); return;
+        case 'deletePersona': this.prefs.deletePersona(String(m.id)); this.post({ type: 'personas', personas: this.prefs.personas() }); return;
+        case 'setPersona': this.store.setPersona(this.store.activeId, m.id ? String(m.id) : undefined); this.postChats(); return;
+        case 'setSkill': this.store.setSkill(this.store.activeId, m.id ? String(m.id) : undefined); this.postChats(); return;
       }
     } catch (e) {
       this.banner(String(e));
@@ -273,7 +499,7 @@ export class ChatController {
     const entry = loadPolicy().find((e) => e.id === id);
     if (!entry) return;
     this.selected = entry;
-    this.devModel = null; // picking a governed model takes over from any dev-model routing
+    this.devModel = null;
     if (entry.provider === 'local') {
       if (!this.client) this.client = await this.deps.connect();
       try {
@@ -287,27 +513,23 @@ export class ChatController {
     }
     await this.pushStatus();
     this.postContextWindow();
+    this.postChatMode();
   }
 
   private handleAddModel(slug: string): void {
     const reason = explainBlock(slug);
     if (reason) { this.post({ type: 'addBlocked', slug, reason }); return; }
-    // Approved slug: it is already in the registry; surface it as selectable.
     this.post({ type: 'addAccepted', slug });
   }
 
   private async targetDeps() {
     const status = this.client ? await this.client.status().catch(() => null) : null;
-    return {
-      localEndpoint: status?.endpoint ?? undefined,
-      openRouterKey: this.deps.secrets.get(OPENROUTER_KEY_ID),
-    };
+    return { localEndpoint: status?.endpoint ?? undefined, openRouterKey: this.deps.secrets.get(OPENROUTER_KEY_ID) };
   }
 
   private async currentTarget(): Promise<ResolvedTarget> {
     if (this.devMode && this.devModel) {
-      const key = this.deps.secrets.get(FIREWORKS_KEY_ID);
-      return resolveDevTarget(this.devModel, key ?? '');
+      return resolveDevTarget(this.devModel, this.deps.secrets.get(FIREWORKS_KEY_ID) ?? '');
     }
     if (this.selected) {
       if (!this.client) this.client = await this.deps.connect();
@@ -316,45 +538,85 @@ export class ChatController {
     throw new Error('Pick a model first.');
   }
 
+  private macToolDeps() {
+    return {
+      approveEdit: (rel: string, isNew: boolean) => this.deps.approveEdit(rel, isNew),
+      approveCommand: (command: string) => this.deps.approveCommand(command),
+    };
+  }
+
   private async handleSend(text: string): Promise<void> {
     if (this.generating) { this.banner('Still generating — press Stop first.'); this.post({ type: 'restoreInput', text }); return; }
     let target: ResolvedTarget;
-    try {
-      target = await this.currentTarget();
-    } catch (e) {
-      this.banner(String(e instanceof Error ? e.message : e));
-      this.post({ type: 'restoreInput', text });
-      return;
-    }
+    try { target = await this.currentTarget(); }
+    catch (e) { this.banner(String(e instanceof Error ? e.message : e)); this.post({ type: 'restoreInput', text }); return; }
     const params = this.prefs.params();
     if (Object.keys(params).length) target = { ...target, bodyExtra: { ...target.bodyExtra, ...params } };
     const session = this.store.active();
     const ctx = await this.collectContext(text);
     const preamble = buildContextPreamble(ctx);
-    const sys = SYSTEM_PROMPT + (preamble ? '\n\n---\n' + preamble : '');
+    const sys = this.systemPromptForChat() + (preamble ? '\n\n---\n' + preamble : '');
     const preTurnLen = session.messages.length;
     session.addUser(text);
     this.post({ type: 'history', messages: session.messages });
     this.generating = new AbortController();
     let usage: Usage | null = null;
+    const checkpoint = this.agentMode ? new AgentCheckpoint() : null;
+    const root = this.root;
     try {
-      const r = await streamChat(target, session.toRequestMessages(sys),
-        (t) => this.post({ type: 'token', text: t }), this.generating.signal,
-        (t) => this.post({ type: 'reasoning', text: t }));
-      session.addAssistant(splitThink(r.content).content || '(no reply)');
-      if (ctx.codebase && ctx.codebase.length) {
-        const last = session.messages[session.messages.length - 1];
-        last.sources = ctx.codebase.map(({ file, startLine, endLine }) => ({ file, startLine, endLine }));
+      if (this.compareModelId) {
+        const entry = loadPolicy().find((e) => e.id === this.compareModelId);
+        if (entry) {
+          const targetB = await resolveTarget(entry, await this.targetDeps());
+          const sessionB = new Session();
+          sessionB.messages = session.messages.map((m) => ({ ...m }));
+          this.post({ type: 'compareStart' });
+          await Promise.all([
+            (async () => {
+              if (this.agentMode && root) {
+                await runAgentTurn(target, session, sys, (step) => this.post({ type: 'agentStep', step: `[A] ${step}` }), this.generating!.signal, {
+                  extraTools: this.mcpTools, toolExtras: this.toolExtras(checkpoint ?? undefined), workspaceRoot: root,
+                  execute: (n, a, w, ex) => executeMacTool(n, a, w, ex, this.macToolDeps()),
+                });
+              } else {
+                const r = await streamChat(target, session.toRequestMessages(sys), (t) => this.post({ type: 'token', text: t }), this.generating!.signal, (t) => this.post({ type: 'reasoning', text: t }));
+                session.addAssistant(splitThink(r.content).content || '(no reply)');
+                usage = r.usage;
+              }
+            })(),
+            (async () => {
+              const r = await streamChat(targetB, sessionB.toRequestMessages(sys), (t) => this.post({ type: 'compareToken', side: 'B', text: t }), this.generating!.signal);
+              this.post({ type: 'compareDone', side: 'B', content: splitThink(r.content).content || '(no reply)' });
+            })(),
+          ]);
+          this.post({ type: 'compareDone', side: 'A', content: session.messages[session.messages.length - 1]?.content ?? '' });
+        }
+      } else if (this.agentMode) {
+        if (!root) { this.banner('Open a folder for agent mode.'); throw new Error('no workspace'); }
+        await runAgentTurn(target, session, sys, (step) => this.post({ type: 'agentStep', step }), this.generating.signal, {
+          extraTools: this.mcpTools, toolExtras: this.toolExtras(checkpoint ?? undefined), workspaceRoot: root,
+          execute: (n, a, w, ex) => executeMacTool(n, a, w, ex, this.macToolDeps()),
+        });
+      } else {
+        const r = await streamChat(target, session.toRequestMessages(sys),
+          (t) => this.post({ type: 'token', text: t }), this.generating.signal,
+          (t) => this.post({ type: 'reasoning', text: t }));
+        session.addAssistant(splitThink(r.content).content || '(no reply)');
+        if (ctx.codebase?.length) {
+          const last = session.messages[session.messages.length - 1];
+          last.sources = ctx.codebase.map(({ file, startLine, endLine }) => ({ file, startLine, endLine }));
+        }
+        this.post({ type: 'reasoningDone' });
+        usage = r.usage;
       }
-      this.post({ type: 'reasoningDone' });
-      usage = r.usage;
       this.store.touchTitle();
       this.store.save();
       this.post({ type: 'history', messages: session.messages });
       this.postChats();
       if (usage) this.post({ type: 'usage', usage });
+      if (checkpoint?.hasChanges()) { this.lastCheckpoint = checkpoint; this.postAgentUndo(); }
     } catch (e) {
-      session.messages.length = preTurnLen; // error hygiene: remove user msg + any tool exchange from the failed turn
+      session.messages.length = preTurnLen;
       this.store.save();
       this.post({ type: 'history', messages: session.messages });
       this.post({ type: 'restoreInput', text });
@@ -367,6 +629,9 @@ export class ChatController {
   dispose(): void {
     if (this.poller) clearInterval(this.poller);
     this.poller = null;
-    if (this.watcher) { this.watcher.close(); this.watcher = null; }
+    if (this.ragWatcher) { this.ragWatcher.close(); this.ragWatcher = null; }
+    if (this.skillsWatcher) { this.skillsWatcher.close(); this.skillsWatcher = null; }
+    for (const c of this.mcpClients) c.dispose();
+    this.mcpClients = [];
   }
 }
