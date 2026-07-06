@@ -306,18 +306,43 @@ export class ChatController {
     }
     let codebase: ChatContext['codebase'] = null;
     const rag = this.ragService();
+    let embedSwap = false;
     if (rag && parseMentions(userText).includes('codebase') && this.client) {
-      try { codebase = await rag.retrieveHits(this.client, userText); }
+      try { codebase = await rag.retrieveHits(this.client, userText); embedSwap = true; }
       catch (e) { this.banner(`@codebase retrieval failed: ${e instanceof Error ? e.message : e}`); }
     }
     let docs: ChatContext['docs'] = null;
     if (parseMentions(userText).includes('docs') && this.client) {
-      try { docs = await this.docsService().retrieveHits(this.client, userText); }
+      try { docs = await this.docsService().retrieveHits(this.client, userText); embedSwap = true; }
       catch (e) { this.banner(`@docs retrieval failed: ${e instanceof Error ? e.message : e}`); }
     }
+    if (embedSwap) await this.restartLocalIfSelected();
     const images = this.pendingImages.length ? [...this.pendingImages] : undefined;
     this.pendingImages = [];
     return { file: null, selection: null, mentions, codebase, docs, images };
+  }
+
+  /** Unload the local chat llama-server when switching to cloud or dev routing. */
+  private async unloadLocalModel(): Promise<void> {
+    if (!this.client) return;
+    try {
+      const status = await this.client.status();
+      if (status.state === 'ready' || status.state === 'loading-model' || status.state === 'starting') {
+        await this.client.stop();
+      }
+    } catch { /* daemon gone */ }
+  }
+
+  /** Reload the selected local chat model after a temporary embed swap. */
+  private async restartLocalIfSelected(): Promise<void> {
+    if (this.selected?.provider !== 'local' || !this.client) return;
+    try {
+      const r = await this.client.start(this.selected.local!.catalogId);
+      if (!r.ok) this.post({ type: 'startRejected', rejection: r.rejection, modelId: this.selected.id });
+    } catch (e) {
+      this.banner(String(e));
+    }
+    await this.pushStatus();
   }
 
   private async pushStatus(): Promise<void> {
@@ -344,7 +369,10 @@ export class ChatController {
         await rag.index(this.client, (p) => this.post({ type: 'ragProgress', progress: p }));
         this.post({ type: 'ragStatus', stats: rag.stats(), indexing: false });
       } catch { /* retry on next save */ }
-      finally { this.ragIndexing = false; }
+      finally {
+        this.ragIndexing = false;
+        await this.restartLocalIfSelected();
+      }
     });
     try {
       this.ragWatcher = watch(this.root, { recursive: true }, (_e, filename) => { if (filename) debouncer.add(filename); });
@@ -420,7 +448,12 @@ export class ChatController {
         case 'addModel': return this.handleAddModel(String(m.slug));
         case 'setOpenRouterKey': this.deps.secrets.set(OPENROUTER_KEY_ID, String(m.key)); this.post({ type: 'openRouterKeySet', set: true }); return;
         case 'setFireworksKey': this.deps.secrets.set(FIREWORKS_KEY_ID, String(m.key)); await this.postDev(); return;
-        case 'selectDevModel': this.devModel = String(m.slug) || null; this.selected = null; this.postContextWindow(); return;
+        case 'selectDevModel':
+          await this.unloadLocalModel();
+          this.devModel = String(m.slug) || null;
+          this.selected = null;
+          this.postContextWindow();
+          return;
         case 'downloadModel': await (await this.ensureClient()).download(String(m.catalogId)); return;
         case 'indexWorkspace': {
           if (this.ragIndexing) return;
@@ -437,11 +470,15 @@ export class ChatController {
           } catch (e) {
             this.banner(`Indexing failed: ${e instanceof Error ? e.message : e}`);
             if (rag) this.post({ type: 'ragStatus', stats: rag.stats(), indexing: false });
-          } finally { this.ragIndexing = false; }
+          } finally {
+            this.ragIndexing = false;
+            await this.restartLocalIfSelected();
+          }
           return;
         }
         case 'installBinary': await (await this.ensureClient()).installBinary(); return;
         case 'killForeign': await (await this.ensureClient()).foreignKill(m.pids); return;
+        case 'retryModelAfterKill': return await this.retryModelAfterKill(m.pids, String(m.modelId ?? ''));
         case 'excludeContext': this.excluded.add(String(m.id)); return;
         case 'insertCode': this.deps.writeClipboard(String(m.code)); this.deps.showInfo('Code copied to clipboard.'); return;
         case 'applyCode': this.deps.writeClipboard(String(m.code)); this.deps.showInfo('Code copied to clipboard — paste into your editor to apply.'); return;
@@ -467,6 +504,7 @@ export class ChatController {
           if (!picks.length) return;
           const client = await this.ensureClient();
           await this.docsService().indexFiles(client, picks, (n, t) => this.post({ type: 'docsProgress', done: n, total: t }));
+          await this.restartLocalIfSelected();
           this.post({ type: 'docsStatus', stats: this.docsService().stats() }); return;
         }
         case 'attachImage': {
@@ -519,6 +557,27 @@ export class ChatController {
     }
   }
 
+
+  /** Kill foreign llama-server processes then retry starting the selected model. */
+  private async retryModelAfterKill(pids: unknown, modelId: string): Promise<void> {
+    const killPids = (Array.isArray(pids) ? pids : []).map((p) => Number(p)).filter((p) => p > 0);
+    if (!modelId || !killPids.length) {
+      this.banner('Nothing to retry — pick a model again.');
+      return;
+    }
+    try {
+      this.banner('Stopping other models…');
+      await (await this.ensureClient()).foreignKill(killPids);
+      await new Promise((r) => setTimeout(r, 2000));
+      this.banner('Starting model…');
+      await this.selectModel(modelId);
+      const status = this.client ? await this.client.status().catch(() => null) : null;
+      if (status?.state === 'ready') this.post({ type: 'clearBanner' });
+    } catch (e) {
+      this.banner(`Could not restart model: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   private async selectModel(id: string): Promise<void> {
     const entry = loadPolicy().find((e) => e.id === id);
     if (!entry) return;
@@ -534,6 +593,8 @@ export class ChatController {
         if (msg.includes('428')) this.banner('This model needs to be downloaded first — click it to download.');
         else this.banner(msg);
       }
+    } else {
+      await this.unloadLocalModel();
     }
     await this.pushStatus();
     this.postContextWindow();
