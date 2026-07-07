@@ -9,7 +9,7 @@
     "sync:extension": "node scripts/sync-extension-media.mjs",
     "sync": "node scripts/sync-renderer.mjs",
     "prebuild": "node scripts/check-vendor.mjs && node scripts/check-extension-parity.mjs",
-    "build": "npm run sync && node esbuild.mjs && tsc -p tsconfig.json --noEmit",
+    "build": "npm run sync:extension && npm run sync && node esbuild.mjs && tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "start": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke",
