@@ -1,13 +1,26 @@
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const VENDOR = join(HERE, 'vendor/fortress-code');
+
+/** Resolve ../../vendor/... imports from src/main to absolute vendor paths. */
+const vendorResolvePlugin = {
+  name: 'vendor-resolve',
+  setup(build) {
+    build.onResolve({ filter: /^\.\.\/\.\.\/vendor\/fortress-chat\// }, (args) => ({
+      path: resolve(args.resolveDir, args.path),
+    }));
+  },
+};
 
 const shared = {
   bundle: true, platform: 'node', target: 'node20', format: 'cjs', sourcemap: true,
+  absWorkingDir: HERE,
+  plugins: [vendorResolvePlugin],
   alias: {
-    '@fortress-chat/shared': './vendor/fortress-chat/packages/shared/src/index.ts',
+    '@fortress-chat/shared': join(VENDOR, 'packages/shared/src/index.ts'),
     vscode: join(HERE, 'src/main/vscodeStub.ts'),
   },
 };
