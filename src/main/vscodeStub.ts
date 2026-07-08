@@ -6,11 +6,17 @@ export const Uri = {
   parse: (s: string) => ({ fsPath: s }),
 };
 
+export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 };
+
 export const workspace = {
   registerTextDocumentContentProvider: () => ({ dispose: () => {} }),
   applyEdit: async () => true,
   fs: { writeFile: async () => {} },
   asRelativePath: (p: string) => p,
+  getConfiguration: (_section?: string) => ({
+    get: <T>(_key: string, defaultValue?: T) => defaultValue as T,
+    update: async (_key: string, _value: unknown) => {},
+  }),
 };
 
 export const window = {
@@ -34,4 +40,4 @@ export const DiagnosticSeverity = { Error: 'error', Warning: 'warning', Informat
 export const languages = { getDiagnostics: () => [] };
 export const ProgressLocation = { Notification: 1 };
 
-export default { Uri, workspace, window, commands, WorkspaceEdit, Range, Selection };
+export default { Uri, workspace, window, commands, WorkspaceEdit, Range, Selection, ConfigurationTarget };
