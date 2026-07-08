@@ -18,13 +18,17 @@ function makeDeps() {
   const deps = {
     userDataDir,
     settings,
-    connect: vi.fn(async () => ({ status: async () => ({ state: 'idle', modelId: null, endpoint: null, download: null, crashLog: null, ram: { totalBytes: 1, availableBytes: 1 }, binaryInstalled: false, downloadedModelIds: [], downloadError: null, embed: { state: 'idle', modelId: null, endpoint: null } }) }) as any),
+    connect: vi.fn(async () => ({
+      status: async () => ({ state: 'idle', modelId: null, endpoint: null, download: null, crashLog: null, ram: { totalBytes: 1, availableBytes: 1 }, binaryInstalled: false, downloadedModelIds: [], downloadError: null, embed: { state: 'idle', modelId: null, endpoint: null } }),
+      shutdown: async () => {},
+    }) as any),
     post: (m: any) => posts.push(m),
     openPath: vi.fn(async () => {}),
     saveFile,
     secrets: new SecretStore(join(userDataDir, 'secrets.json'), backend),
     pickDocuments: vi.fn(async () => []),
     pickImage: vi.fn(async () => null),
+    pickModelsDirectory: vi.fn(async () => null),
     approveEdit: vi.fn(async () => true),
     approveCommand: vi.fn(async () => true),
     writeClipboard: vi.fn(),

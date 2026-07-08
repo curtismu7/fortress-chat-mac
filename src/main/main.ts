@@ -86,6 +86,13 @@ app.whenReady().then(async () => {
       const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
       return { mime, base64: buf.toString('base64'), name: path.split('/').pop() ?? 'image' };
     },
+    pickModelsDirectory: async () => {
+      const r = await dialog.showOpenDialog(mainWindow!, {
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Choose local models folder',
+      });
+      return r.filePaths[0] ?? null;
+    },
     approveEdit: async (rel, isNew) => {
       const r = await dialog.showMessageBox(mainWindow!, {
         type: 'question', buttons: ['Apply', 'Reject'], defaultId: 0, cancelId: 1,
@@ -137,6 +144,10 @@ app.whenReady().then(async () => {
         dialog.showErrorBox('FortressChat — not allowed', 'Developer mode is disabled. FortressChat supports local US models only.');
       } },
       { label: 'Edit Settings (MCP + Skills)…', click: async () => { await shell.openPath(settingsPath(userDataDir)); } },
+      { type: 'separator' },
+      { label: 'Choose Models Folder…', click: () => void controller?.onMessage({ type: 'pickModelsDirectory' }) },
+      { label: 'Use Default Models Folder', click: () => void controller?.onMessage({ type: 'clearModelsDirectory' }) },
+      { type: 'separator' },
       { label: 'Reload MCP Servers', click: () => void controller?.onMessage({ type: 'reloadMcp' }) },
       { label: 'Reload Skills', click: () => void controller?.onMessage({ type: 'reloadSkills' }) },
     ] },
