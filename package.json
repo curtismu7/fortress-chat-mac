@@ -1,6 +1,6 @@
 {
   "name": "fortress-chat-mac",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "description": "FortressChat for Mac \u2014 local-first AI chat with US-only model governance",
   "main": "dist/main.js",
