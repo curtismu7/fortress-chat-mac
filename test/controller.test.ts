@@ -69,6 +69,17 @@ describe('ChatController', () => {
     }
     const policy = posts.find((p) => p.type === 'policy');
     expect(policy.google?.length).toBeGreaterThan(0);
+    expect(policy.local.some((e: { id: string }) => e.id === 'nomic-embed-text-v1.5')).toBe(false);
+    c.dispose();
+  });
+
+  it('selectModel ignores embedding-only models', async () => {
+    const { deps } = makeDeps();
+    const c = new ChatController(deps);
+    await c.init();
+    deps.connect.mockClear();
+    await c.onMessage({ type: 'selectModel', id: 'nomic-embed-text-v1.5' });
+    expect(deps.connect).not.toHaveBeenCalled();
     c.dispose();
   });
 
