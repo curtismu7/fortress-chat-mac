@@ -2,7 +2,7 @@
   "name": "fortress-chat-mac",
   "version": "0.3.2",
   "private": true,
-  "description": "FortressChat for Mac — local-first AI chat with US-only model governance",
+  "description": "FortressChat for Mac \u2014 local-first AI chat with US-only model governance",
   "main": "dist/main.js",
   "engines": {
     "node": ">=20 <23"
@@ -19,7 +19,7 @@
     "sync:extension": "node scripts/sync-extension-media.mjs",
     "sync": "node scripts/sync-renderer.mjs",
     "prebuild": "node scripts/ensure-electron.mjs && node scripts/check-vendor.mjs && node scripts/check-extension-parity.mjs",
-    "build": "npm run sync:extension && npm run sync && node esbuild.mjs && tsc -p tsconfig.json --noEmit",
+    "build": "npm run sync && node esbuild.mjs && tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "prestart": "node scripts/ensure-electron.mjs",
     "start": "npm run build && electron .",
