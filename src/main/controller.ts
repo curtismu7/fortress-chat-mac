@@ -29,6 +29,7 @@ import { discoverSkills, DEFAULT_SKILL_DIRS, type Skill } from '../../vendor/for
 import { FileMemento } from './fileMemento';
 import { SecretStore, OPENROUTER_KEY_ID, FIREWORKS_KEY_ID, GOOGLE_KEY_ID } from './secrets';
 import { validateGoogleApiKey } from './validateGoogleKey';
+import { defaultModelsDirectory, getModelsDirectory, setModelsDirectory, syncModelsDirectoryConfig } from './modelsDirectory';
 import { executeMacTool, resolveInWorkspace } from './macTools';
 
 const SYSTEM_PROMPT = 'You are Fortress Code, a helpful local coding assistant.';
@@ -54,6 +55,7 @@ export interface ControllerDeps {
   secrets: SecretStore;
   pickDocuments: () => Promise<string[]>;
   pickImage: () => Promise<{ mime: string; base64: string; name: string } | null>;
+  pickModelsDirectory: () => Promise<string | null>;
   approveEdit: (rel: string, isNew: boolean) => Promise<boolean>;
   approveCommand: (command: string) => Promise<boolean>;
   writeClipboard: (text: string) => void;
@@ -110,6 +112,46 @@ export class ChatController {
   private async ensureClient(): Promise<DaemonClient> {
     if (!this.client) this.client = await this.deps.connect();
     return this.client;
+  }
+
+  /** Restart the llama.cpp daemon so a new models folder takes effect. */
+  private async restartDaemon(): Promise<void> {
+    if (this.client) {
+      await this.client.shutdown();
+      this.client = null;
+    }
+    try {
+      this.client = await this.deps.connect();
+    } catch (e) {
+      this.banner(`Could not restart FortressChat daemon: ${e}`);
+    }
+    await this.pushStatus();
+  }
+
+  /** Save models folder, sync daemon config, and reconnect. */
+  private async applyModelsDirectory(dir: string): Promise<void> {
+    setModelsDirectory(this.deps.settings, dir);
+    this.postModelsDirectory();
+    this.post({
+      type: 'modelsDirectoryStatus',
+      message: dir.trim() ? 'Models folder updated. Restarting engine…' : 'Using default models folder. Restarting engine…',
+    });
+    await this.restartDaemon();
+    const custom = getModelsDirectory(this.deps.settings);
+    this.post({
+      type: 'modelsDirectoryStatus',
+      message: custom ? `Using models in ${custom}` : `Using default folder (${defaultModelsDirectory()})`,
+    });
+  }
+
+  private postModelsDirectory(): void {
+    const custom = getModelsDirectory(this.deps.settings);
+    this.post({
+      type: 'modelsDirectory',
+      path: custom,
+      effective: custom || defaultModelsDirectory(),
+      defaultPath: defaultModelsDirectory(),
+    });
   }
 
   private ragService(): RagService | null {
@@ -223,6 +265,7 @@ export class ChatController {
     this.post({ type: 'memory', data: this.memoryData() });
     this.post({ type: 'folders', folders: this.store.listFolders() });
     this.post({ type: 'docsStatus', stats: this.docsService().stats() });
+    this.postModelsDirectory();
     this.postMcpStatus();
     this.post({ type: 'openRouterKeySet', set: !!this.deps.secrets.get(OPENROUTER_KEY_ID) });
     const googleKeySaved = !!this.deps.secrets.get(GOOGLE_KEY_ID);
@@ -243,6 +286,7 @@ export class ChatController {
 
   async init(): Promise<void> {
     try {
+      syncModelsDirectoryConfig(this.deps.settings);
       this.sanitizeLocalUsOnly();
       try {
         this.client = await this.deps.connect();
@@ -532,6 +576,15 @@ export class ChatController {
           return;
         case 'reloadMcp': await this.initMcp(); return;
         case 'reloadSkills': this.refreshSkills(); return;
+        case 'pickModelsDirectory': {
+          const dir = await this.deps.pickModelsDirectory();
+          if (!dir) return;
+          await this.applyModelsDirectory(dir);
+          return;
+        }
+        case 'clearModelsDirectory':
+          await this.applyModelsDirectory('');
+          return;
         case 'selectModel': return await this.selectModel(String(m.id));
         case 'addModel': return this.handleAddModel(String(m.slug));
         case 'setOpenRouterKey':
