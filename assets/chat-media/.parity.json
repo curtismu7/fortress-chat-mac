@@ -3,9 +3,9 @@
   "sourceCommit": "d0afb45ca2aa02bbf962e259b24054a4073df29e",
   "syncedAt": "2026-07-08T10:45:59.509Z",
   "mediaFiles": {
-    "chat.css": "137cdc5dac09bc3e2ec24e3390df454abc74f729f0f9df1d4014d39efc7df548",
-    "chat.html": "af13d51ae75df065d368f277e287a9859aba973c866bfc7632a03b7862ffcd7b",
-    "chat.js": "b1acd9ebbbec46936943ba8b9391f02665bf4cd6e0ca73a19c60308aebef71a6",
+    "chat.css": "b56da287abd426abd01da6ee990389f792f858ea65de36518dd1dccf8b6d192e",
+    "chat.html": "fa5bbef030d08e122bd2308edb823708e16d69740070cd03bd1107b17525e3b7",
+    "chat.js": "581be53a7cc9441610c05649f769c6b1453a61c7a88678939ab84e0c4377a3f6",
     "icon.svg": "f374df7f5c605ca3ae335e58f53612a16b3274594b3bf7d6b1c19bc637dab648",
     "vendor/auto-render.min.js": "e5372d199bcdae8b4de71d0f7ceba72a4ba12774a27c60a6f1f77d03b3228ee4",
     "vendor/fonts/KaTeX_AMS-Regular.woff2": "0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308",
