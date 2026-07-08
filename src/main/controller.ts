@@ -35,6 +35,7 @@ const SYSTEM_PROMPT = 'You are Fortress Code, a helpful local coding assistant.'
 const DEV_MODE_KEY = 'fortressCode.devMode';
 const MCP_KEY = 'fortressCode.mcpServers';
 const SKILL_DIRS_KEY = 'fortressCode.skillDirectories';
+const AUTO_APPROVE_KEY = 'fortressChat.autoApprove';
 
 const MODE_PROMPTS: Record<string, string> = {
   plan: 'You are in plan mode. Outline a clear step-by-step plan before editing files. Discuss tradeoffs and wait for confirmation before applying changes unless the user asked you to implement immediately.',
@@ -76,6 +77,7 @@ export class ChatController {
   private generating: AbortController | null = null;
   private agentMode = false;
   private chatMode: ChatMode = 'ask';
+  private autoApprove = false;
   private selected: PolicyEntry | null = null;
   private devMode = false;
   private devModel: string | null = null;
@@ -93,6 +95,7 @@ export class ChatController {
   constructor(private deps: ControllerDeps) {
     this.store = SessionStore.load(new FileMemento(join(deps.userDataDir, 'sessions.json')));
     this.prefs = new Prefs(new FileMemento(join(deps.userDataDir, 'prefs.json')));
+    this.autoApprove = !!deps.settings.get(AUTO_APPROVE_KEY);
     this.devMode = false;
     deps.settings.update(DEV_MODE_KEY, false);
   }
@@ -167,6 +170,7 @@ export class ChatController {
   private postChatMode(): void {
     const agentCapable = this.devMode && this.devModel ? true : !!this.selected?.agentCapable;
     this.post({ type: 'chatMode', mode: this.chatMode, agentOn: this.agentMode, compareId: this.compareModelId, agentCapable });
+    this.post({ type: 'runMode', mode: this.autoApprove ? 'auto' : 'manual' });
   }
 
   private postAgentUndo(): void {
@@ -194,6 +198,7 @@ export class ChatController {
       },
       onFileTouch: checkpoint ? (rel: string, abs: string) => checkpoint.capture(rel, abs) : undefined,
       onFileRevertCapture: checkpoint ? (rel: string) => checkpoint.revert(rel) : undefined,
+      autoApprove: this.autoApprove,
     };
   }
 
@@ -515,6 +520,12 @@ export class ChatController {
           this.postChatMode();
           return;
         }
+        case 'setRunMode': {
+          this.autoApprove = String(m.mode) === 'auto';
+          this.deps.settings.update(AUTO_APPROVE_KEY, this.autoApprove);
+          this.post({ type: 'runMode', mode: this.autoApprove ? 'auto' : 'manual' });
+          return;
+        }
         case 'openMcpSettings':
         case 'openSkillSettings':
           await this.deps.openSettingsFile();
@@ -724,8 +735,8 @@ export class ChatController {
 
   private macToolDeps() {
     return {
-      approveEdit: (rel: string, isNew: boolean) => this.deps.approveEdit(rel, isNew),
-      approveCommand: (command: string) => this.deps.approveCommand(command),
+      approveEdit: (rel: string, isNew: boolean) => this.autoApprove ? Promise.resolve(true) : this.deps.approveEdit(rel, isNew),
+      approveCommand: (command: string) => this.autoApprove ? Promise.resolve(true) : this.deps.approveCommand(command),
     };
   }
 
