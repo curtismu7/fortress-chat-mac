@@ -1,7 +1,7 @@
 import { readFileSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadPolicy, visibleLocalEntries, hiddenLocalEntries, googleEntries, explainBlock, formatPolicyFatal, type PolicyEntry, type StatusResponse } from '@fortress-chat/shared';
+import { loadPolicy, chatLocalEntries, visibleLocalEntries, hiddenLocalEntries, googleEntries, explainBlock, formatPolicyFatal, type PolicyEntry, type StatusResponse } from '@fortress-chat/shared';
 import { DaemonClient } from '../../vendor/fortress-code/packages/extension/src/daemon';
 import { RagService } from '../../vendor/fortress-code/packages/extension/src/rag/service';
 import { Debouncer } from '../../vendor/fortress-code/packages/extension/src/rag/watcher';
@@ -735,7 +735,7 @@ export class ChatController {
   }
 
   private async selectModel(id: string): Promise<void> {
-    const entry = loadPolicy().find((e) => e.id === id);
+    const entry = [...chatLocalEntries(), ...googleEntries()].find((e) => e.id === id);
     if (!entry) return;
     this.selected = entry;
     this.devModel = null;
