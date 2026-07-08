@@ -52,12 +52,23 @@ chat plus `@codebase` context lookups, backed by the manager daemon from the
 
 ## Dev build
 
+**Requirements:** macOS 13+, Apple Silicon, **Node.js 20 or 22 LTS** (Node 23+ is unsupported).
+
 ```bash
 git clone --recurse-submodules https://github.com/curtismu7/fortress-chat-mac
 cd fortress-chat-mac
 npm install
 npm start
 ```
+
+If `npm install` warns about blocked install scripts (npm 11+), run once:
+
+```bash
+npm approve-scripts --allow-scripts-pending
+npm install
+```
+
+Our `postinstall` also repairs Electron when the binary downloaded but `path.txt` was skipped.
 
 `npm run dist` produces an unsigned arm64 DMG under `release/`.
 
