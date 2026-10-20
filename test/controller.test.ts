@@ -14,6 +14,9 @@ function makeDeps() {
   const settings = new FileMemento(join(userDataDir, 'settings.json'));
   settings.update('fortressCode.mcpServers', []);
   settings.update('fortressCode.skillDirectories', ['.fortress/skills']);
+  // Built-in PingOne MCP would spawn the `pingone-mcp-server` binary (absent in
+  // CI/test envs) and hang init() until the 30s MCP timeout — disable it here.
+  settings.update('fortressChat.pingOneMcp', { enabled: false });
   const saveFile = vi.fn(async () => {});
   const deps = {
     userDataDir,
