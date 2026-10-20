@@ -22,11 +22,12 @@ describe('syncRenderer', () => {
     expect(readFileSync(join(out, 'theme.css'), 'utf8')).toContain('--vscode-foreground');
   });
 
+  // 4MB recursive copy (mermaid.min.js) — 5s default is too tight on CI runners.
   it('copies the vendor media subdirectory and keeps chat.js byte-identical', () => {
     const out = mkdtempSync(join(tmpdir(), 'fc-renderer-'));
     syncRenderer(MEDIA, out);
     expect(readFileSync(join(out, 'chat.js'))).toEqual(readFileSync(join(MEDIA, 'chat.js')));
     expect(readFileSync(join(out, 'vendor', 'katex.min.js'))).toEqual(readFileSync(join(MEDIA, 'vendor', 'katex.min.js')));
     expect(readFileSync(join(out, 'vendor', 'mermaid.min.js'))).toEqual(readFileSync(join(MEDIA, 'vendor', 'mermaid.min.js')));
-  });
+  }, 30_000);
 });
